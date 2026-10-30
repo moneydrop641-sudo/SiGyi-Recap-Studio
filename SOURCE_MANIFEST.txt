@@ -1,0 +1,17 @@
+Si Gyi Studio — Local upload/style/render source package
+
+Core files:
+- src/main.js — upload, style controls, local render workflow
+- src/lib/render.js — FFmpeg WASM visual processing and MP4 export
+- src/lib/subtitles.js — retained rendering utility for Burmese-compatible subtitle image support
+- src/styles.css — existing UI style
+- package.json / pnpm-lock.yaml — FFmpeg WASM and Vite dependencies
+- vite.config.js — Vite server and local render diagnostic logging
+
+Removed from this version:
+- Gemini API/script generation
+- transcript editor
+- Edge TTS and voice generation
+- api/tts.js and legacy bot.py
+
+The source video and rendered output stay in the browser session. No Gemini or TTS request is made.

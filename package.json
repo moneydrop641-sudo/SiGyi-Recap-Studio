@@ -1,0 +1,28 @@
+{
+  "name": "sigyi-recap-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 3000",
+    "android:add": "npx cap add android && node scripts-copy-android-native.mjs",
+    "android:sync": "npm run build && node scripts-copy-android-native.mjs && npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:bridge": "node scripts-copy-android-native.mjs",
+    "check": "node --check src/main.js && node --check src/lib/render.js && node --check src/lib/subtitles.js && node --check scripts-copy-android-native.mjs",
+    "android:ci": "npm run build && npx cap add android && npm run android:bridge && npx cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "0.12.6",
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@ffmpeg/util": "0.12.2",
+    "@capacitor/core": "7.4.3",
+    "@capacitor/android": "7.4.3"
+  },
+  "devDependencies": {
+    "vite": "6.4.5",
+    "@capacitor/cli": "7.4.3"
+  }
+}
