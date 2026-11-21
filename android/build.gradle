@@ -10,4 +10,4 @@ allprojects {
         google()
         mavenCentral()
     }
-}}
+}
