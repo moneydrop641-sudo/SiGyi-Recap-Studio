@@ -15,12 +15,14 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.MediaStore;
+import androidx.activity.result.ActivityResult;
 import com.arthenica.ffmpegkit.FFmpegKit;
 import com.arthenica.ffmpegkit.FFmpegSession;
 import com.arthenica.ffmpegkit.FFprobeKit;
 import com.arthenica.ffmpegkit.MediaInformationSession;
 import com.arthenica.ffmpegkit.ReturnCode;
 import com.getcapacitor.*;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.*;
 import java.util.*;
@@ -35,47 +37,106 @@ public class NativeRenderPlugin extends Plugin {
 
   @PluginMethod public void pickVideo(PluginCall call) { pick(call, "video/*", "video"); }
   @PluginMethod public void pickAudio(PluginCall call) { pick(call, "audio/*", "audio"); }
+
   @PluginMethod public void pickLogo(PluginCall call) {
     Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("image/*");
     i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-    startActivityForResult(call, i, result -> {
-      if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) { call.reject("Logo ရွေးချယ်မှုကို ပယ်ဖျက်လိုက်ပါပြီ။"); return; }
-      Uri uri = result.getData().getData();
-      try {
-        getContext().getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        String name = displayName(uri).replaceAll("[^A-Za-z0-9._-]", "_");
-        File dir = new File(getContext().getFilesDir(), "media"); if (!dir.exists() && !dir.mkdirs()) throw new Exception("Logo storage မဖန်တီးနိုင်ပါ");
-        File target = new File(dir, "logo_" + System.currentTimeMillis() + "_" + name);
-        try (InputStream in = getContext().getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(target)) {
-          if (in == null) throw new Exception("Logo ဖိုင်ဖတ်မရပါ"); byte[] b = new byte[256 * 1024]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n); out.getFD().sync();
-        }
-        JSObject r = new JSObject(); r.put("path", target.getAbsolutePath()); r.put("name", displayName(uri)); r.put("size", target.length()); r.put("mimeType", getContext().getContentResolver().getType(uri)); call.resolve(r);
-      } catch (Exception e) { call.reject("Logo ဖိုင်ကို ကူးမရပါ: " + e.getMessage()); }
-    });
+    startActivityForResult(call, i, "pickLogoResult");
   }
-  private void pick(PluginCall call, String mime, String kind) {
+
+  @ActivityCallback
+  private void pickLogoResult(PluginCall call, ActivityResult result) {
+    if (call == null) return;
+    if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+      call.reject("Logo ရွေးချယ်မှုကို ပယ်ဖျက်လိုက်ပါပြီ။");
+      return;
+    }
+    Uri uri = result.getData().getData();
+    try {
+      getContext().getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      String name = displayName(uri).replaceAll("[^A-Za-z0-9._-]", "_");
+      File dir = new File(getContext().getFilesDir(), "media");
+      if (!dir.exists() && !dir.mkdirs()) throw new Exception("Logo storage မဖန်တီးနိုင်ပါ");
+      File target = new File(dir, "logo_" + System.currentTimeMillis() + "_" + name);
+      try (InputStream in = getContext().getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(target)) {
+        if (in == null) throw new Exception("Logo ဖိုင်ဖတ်မရပါ");
+        byte[] b = new byte[256 * 1024]; int n;
+        while ((n = in.read(b)) > 0) out.write(b, 0, n);
+        out.getFD().sync();
+      }
+      JSObject r = new JSObject();
+      r.put("path", target.getAbsolutePath());
+      r.put("name", displayName(uri));
+      r.put("size", target.length());
+      r.put("mimeType", getContext().getContentResolver().getType(uri));
+      call.resolve(r);
+    } catch (Exception e) {
+      call.reject("Logo ဖိုင်ကို ကူးမရပါ: " + e.getMessage());
+    }
+  }
+
+private void pick(PluginCall call, String mime, String kind) {
     Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType(mime);
     i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-    startActivityForResult(call, i, result -> {
-      if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) { call.reject("ဖိုင်ရွေးချယ်မှုကို ပယ်ဖျက်လိုက်ပါပြီ။"); return; }
-      Uri uri = result.getData().getData();
-      try {
-        getContext().getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        String displayName = displayName(uri);
-        if ("audio".equals(kind) && !(displayName.toLowerCase(Locale.US).endsWith(".mp3") || displayName.toLowerCase(Locale.US).endsWith(".wav"))) throw new Exception("MP3 သို့မဟုတ် WAV ဖိုင်သာ ရွေးပါ။");
-        String name = displayName.replaceAll("[^A-Za-z0-9._-]", "_");
-        File dir = new File(getContext().getFilesDir(), "media"); if (!dir.exists() && !dir.mkdirs()) throw new Exception("App storage မဖန်တီးနိုင်ပါ");
-        File[] previous = dir.listFiles(); if (previous != null) for (File old : previous) if (old.getName().startsWith(kind + "_")) old.delete();
-        File target = new File(dir, kind + "_" + System.currentTimeMillis() + "_" + name);
-        try (InputStream in = getContext().getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(target)) {
-          if (in == null) throw new Exception("ဖိုင်ဖတ်မရပါ"); byte[] b = new byte[1024 * 1024]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n); out.getFD().sync();
-        }
-        JSObject r = new JSObject(); r.put("path", target.getAbsolutePath()); r.put("name", displayName(uri)); r.put("size", target.length()); r.put("mimeType", getContext().getContentResolver().getType(uri)); call.resolve(r);
-      } catch (Exception e) { call.reject("ဖိုင်ကို app storage ထဲ ကူးမရပါ: " + e.getMessage()); }
-    });
+    // kind အလိုက် callback name ကို ရွေးပါ
+    String callback = "audio".equals(kind) ? "pickAudioResult" : "pickVideoResult";
+    startActivityForResult(call, i, callback);
   }
+
+  @ActivityCallback
+  private void pickVideoResult(PluginCall call, ActivityResult result) {
+    handlePickResult(call, result, "video");
+  }
+
+  @ActivityCallback
+  private void pickAudioResult(PluginCall call, ActivityResult result) {
+    handlePickResult(call, result, "audio");
+  }
+
+  private void handlePickResult(PluginCall call, ActivityResult result, String kind) {
+    if (call == null) return;
+    if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+      call.reject("ဖိုင်ရွေးချယ်မှုကို ပယ်ဖျက်လိုက်ပါပြီ။");
+      return;
+    }
+    Uri uri = result.getData().getData();
+    try {
+      getContext().getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      String displayName = displayName(uri);
+      if ("audio".equals(kind) && !(displayName.toLowerCase(Locale.US).endsWith(".mp3") || displayName.toLowerCase(Locale.US).endsWith(".wav"))) {
+        throw new Exception("MP3 သို့မဟုတ် WAV ဖိုင်သာ ရွေးပါ။");
+      }
+      String name = displayName.replaceAll("[^A-Za-z0-9._-]", "_");
+      File dir = new File(getContext().getFilesDir(), "media");
+      if (!dir.exists() && !dir.mkdirs()) throw new Exception("App storage မဖန်တီးနိုင်ပါ");
+      File[] previous = dir.listFiles();
+      if (previous != null) for (File old : previous) if (old.getName().startsWith(kind + "_")) old.delete();
+      File target = new File(dir, kind + "_" + System.currentTimeMillis() + "_" + name);
+      try (InputStream in = getContext().getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(target)) {
+        if (in == null) throw new Exception("ဖိုင်ဖတ်မရပါ");
+        byte[] b = new byte[1024 * 1024]; int n;
+        while ((n = in.read(b)) > 0) out.write(b, 0, n);
+        out.getFD().sync();
+      }
+      JSObject r = new JSObject();
+      r.put("path", target.getAbsolutePath());
+      r.put("name", displayName(uri));
+      r.put("size", target.length());
+      r.put("mimeType", getContext().getContentResolver().getType(uri));
+      call.resolve(r);
+    } catch (Exception e) {
+      call.reject("ဖိုင်ကို app storage ထဲ ကူးမရပါ: " + e.getMessage());
+    }
+  }
+
   private String displayName(Uri uri) {
-    try (Cursor c = getContext().getContentResolver().query(uri, null, null, null, null)) { if (c != null && c.moveToFirst()) { int n = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME); if (n >= 0) return c.getString(n); } } catch (Exception ignored) {} return "media";
+    try (Cursor c = getContext().getContentResolver().query(uri, null, null, null, null)) {
+      if (c != null && c.moveToFirst()) {
+        int n = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+        if (n >= 0) return c.getString(n);
+      }
+    } catch (Exception ignored) {}
+    return "media";
   }
 
   @PluginMethod public void render(PluginCall call) {
@@ -86,7 +147,8 @@ public class NativeRenderPlugin extends Plugin {
     cancelled = false;
     new Thread(() -> renderWorker(call, new File(vp), ap == null ? null : new File(ap), lp == null ? null : new File(lp)), "SiGyiNativeRender").start();
   }
-  private void renderWorker(PluginCall call, File source, File voice, File logo) {
+
+private void renderWorker(PluginCall call, File source, File voice, File logo) {
     File work = new File(getContext().getCacheDir(), "sigyi_job_" + System.currentTimeMillis());
     if (!work.mkdirs()) { call.reject("Render cache folder မဖန်တီးနိုင်ပါ။ Storage လွတ်နေမှုကို စစ်ပါ။"); return; }
     try {
@@ -126,6 +188,7 @@ public class NativeRenderPlugin extends Plugin {
     } catch(Exception e){ call.reject(e.getMessage()==null?"Native render မအောင်မြင်ပါ":e.getMessage()); }
     finally { deleteTree(work); activeSession=null; }
   }
+
   private FFmpegSession executeTracked(String[] args, PluginCall call, int base, int span, double durationSeconds) throws Exception {
     CountDownLatch done = new CountDownLatch(1); final FFmpegSession[] result = {null};
     FFmpegKit.executeWithArgumentsAsync(args, session -> { result[0] = session; done.countDown(); }, null, stats -> {
@@ -139,11 +202,14 @@ public class NativeRenderPlugin extends Plugin {
     if (result[0] == null) throw new Exception("FFmpeg session result မရပါ။");
     return result[0];
   }
-  private double probe(File f) throws Exception {
+
+
+private double probe(File f) throws Exception {
     CountDownLatch latch=new CountDownLatch(1); final double[] d={0};
     FFprobeKit.getMediaInformationAsync(f.getAbsolutePath(), s->{ try { if(s.getMediaInformation()!=null) d[0]=Double.parseDouble(s.getMediaInformation().getDuration()); } catch(Exception ignored){} latch.countDown(); });
     latch.await(30,TimeUnit.SECONDS); return d[0];
   }
+
   private String buildFilterGraph(JSObject s,int w,int h,int fps,double seconds,int partIndex,int logoInput,File logo,int titleInput,File titleOverlay,int outW,int outH) throws Exception {
     String base = videoFilter(s,w,h,fps,seconds,partIndex);
     String current = "base";
@@ -175,6 +241,7 @@ public class NativeRenderPlugin extends Plugin {
     g.append("[").append(current).append("]null[vout]");
     return g.toString();
   }
+
   private File createTitleOverlay(File work,String text,JSObject style,int frameW,int frameH) throws Exception {
     int fontSize = (int)(clamp(style.optDouble("titleSize",34),16,100) * frameH / 1280.0);
     int padding = Math.max(8, frameW / 90);
@@ -200,9 +267,11 @@ public class NativeRenderPlugin extends Plugin {
     try (FileOutputStream stream = new FileOutputStream(out)) { bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream); stream.flush(); stream.getFD().sync(); }
     bitmap.recycle(); return out;
   }
+
   private int even(int n){ return Math.max(2, n & ~1); }
   private double clamp(double v,double min,double max){ return Math.max(min,Math.min(max,v)); }
   private String safeColor(String c){ return c != null && c.matches("#[0-9a-fA-F]{6}") ? "0x"+c.substring(1) : "white"; }
+
   private String videoFilter(JSObject s,int w,int h,int fps,double seconds,int partIndex) {
     String base;
     if("fit".equals(s.optString("fitMode","fit"))) base="scale="+w+":"+h+":force_original_aspect_ratio=decrease,pad="+w+":"+h+":(ow-iw)/2:(oh-ih)/2:color=black";
@@ -222,9 +291,11 @@ public class NativeRenderPlugin extends Plugin {
     if (border > 0) { String color = s.optString("frameColor", "#d6ef47").replace("#", "0x"); base += ",drawbox=x=0:y=0:w=iw:h=ih:color="+color+":t="+border; }
     return base;
   }
-  private String resBitrate(int crf){ return crf >= 34 ? "700k" : crf >= 28 ? "1800k" : "3500k"; }
+
+private String resBitrate(int crf){ return crf >= 34 ? "700k" : crf >= 28 ? "1800k" : "3500k"; }
   private String fmt(double n){return String.format(Locale.US,"%.3f",n);}
   private void progress(PluginCall c,int p,String stage){JSObject d=new JSObject();d.put("progress",p);d.put("stage",stage);notifyListeners("renderProgress",d);}
+
   private Uri saveMovies(File f)throws Exception{
     if (Build.VERSION.SDK_INT < 29) {
       File movies = getContext().getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES);
@@ -237,7 +308,10 @@ public class NativeRenderPlugin extends Plugin {
     try(InputStream in=new FileInputStream(f);OutputStream out=getContext().getContentResolver().openOutputStream(u)){byte[]b=new byte[1024*1024];int n;while((n=in.read(b))>0)out.write(b,0,n);}
     ContentValues ready=new ContentValues(); ready.put(MediaStore.Video.Media.IS_PENDING,0); getContext().getContentResolver().update(u,ready,null,null); return u;
   }
+
   private void copy(File a,File b)throws Exception{try(InputStream in=new FileInputStream(a);OutputStream out=new FileOutputStream(b)){byte[]x=new byte[1024*1024];int n;while((n=in.read(x))>0)out.write(x,0,n);}}
   private void deleteTree(File f){if(f==null||!f.exists())return;if(f.isDirectory()){File[]xs=f.listFiles();if(xs!=null)for(File x:xs)deleteTree(x);}f.delete();}
   @PluginMethod public void cancel(PluginCall call){cancelled=true;FFmpegKit.cancel();call.resolve();}
 }
+
+
