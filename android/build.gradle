@@ -1,10 +1,13 @@
-apply from: "variables.gradle"
-
 plugins {
     id 'com.android.application' version '8.7.3' apply false
     id 'com.android.library' version '8.7.3' apply false
 }
 
+apply from: "variables.gradle"
+
 allprojects {
-    repositories { google(); mavenCentral() }
-}
+    repositories {
+        google()
+        mavenCentral()
+    }
+}}
