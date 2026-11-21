@@ -1,0 +1,7 @@
+{
+  "appId": "com.sigyi.recapstudio",
+  "appName": "SiGyi Recap Studio",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "android": { "allowMixedContent": false }
+}
