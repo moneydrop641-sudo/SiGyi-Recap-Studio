@@ -3,22 +3,23 @@ plugins { id 'com.android.application' }
 android {
     namespace 'com.sigyi.recapstudio'
     compileSdk rootProject.ext.compileSdkVersion
+
     defaultConfig {
         applicationId 'com.sigyi.recapstudio'
         minSdk rootProject.ext.minSdkVersion
         targetSdk rootProject.ext.targetSdkVersion
         versionCode 1
         versionName '0.2.0'
-    packagingOptions {
-        pickFirst '**/libc++_shared.so'
     }
-}
-    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    packaging { jniLibs { useLegacyPackaging = true } }
+
+    packagingOptions {
+        pickFirst '**/libc++_shared.so'
+    }
 }
 
 dependencies {
