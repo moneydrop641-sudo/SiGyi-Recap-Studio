@@ -9,6 +9,10 @@ android {
         targetSdk rootProject.ext.targetSdkVersion
         versionCode 1
         versionName '0.2.0'
+    packagingOptions {
+        pickFirst '**/libc++_shared.so'
+    }
+}
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
