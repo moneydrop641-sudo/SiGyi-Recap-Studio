@@ -75,10 +75,9 @@ public class NativeRenderPlugin extends Plugin {
     }
   }
 
-private void pick(PluginCall call, String mime, String kind) {
+  private void pick(PluginCall call, String mime, String kind) {
     Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType(mime);
     i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-    // kind အလိုက် callback name ကို ရွေးပါ
     String callback = "audio".equals(kind) ? "pickAudioResult" : "pickVideoResult";
     startActivityForResult(call, i, callback);
   }
@@ -148,13 +147,30 @@ private void pick(PluginCall call, String mime, String kind) {
     new Thread(() -> renderWorker(call, new File(vp), ap == null ? null : new File(ap), lp == null ? null : new File(lp)), "SiGyiNativeRender").start();
   }
 
-private void renderWorker(PluginCall call, File source, File voice, File logo) {
+  private void renderWorker(PluginCall call, File source, File voice, File logo) {
     File work = new File(getContext().getCacheDir(), "sigyi_job_" + System.currentTimeMillis());
     if (!work.mkdirs()) { call.reject("Render cache folder မဖန်တီးနိုင်ပါ။ Storage လွတ်နေမှုကို စစ်ပါ။"); return; }
     try {
       double duration = probe(source); if (duration <= 0) throw new Exception("Video duration ကို မဖတ်နိုင်ပါ။");
-      String res = call.getString("resolution", "720p"); int w = 720, h = 1280, fps = 24, crf = 28;
-      if ("360p".equals(res)) { w=360; h=640; fps=18; crf=34; } else if ("1080p".equals(res)) { w=1080; h=1920; crf=27; }
+
+      // ✅ Ratio နှစ်မျိုးအတွက် ပြင်ဆင်ထားသော အပိုင်း
+      String res = call.getString("resolution", "720p");
+      boolean isLandscape = call.getBoolean("landscape", false);
+      int w, h, fps = 24, crf = 28;
+      if ("360p".equals(res)) {
+          w = isLandscape ? 640 : 360;
+          h = isLandscape ? 360 : 640;
+          fps = 18; crf = 34;
+      } else if ("1080p".equals(res)) {
+          w = isLandscape ? 1920 : 1080;
+          h = isLandscape ? 1080 : 1920;
+          crf = 27;
+      } else {
+          w = isLandscape ? 1280 : 720;
+          h = isLandscape ? 720 : 1280;
+      }
+      // ✅ ပြင်ဆင်မှု ပြီးဆုံး
+
       JSObject style = call.getObject("style"); if (style == null) style = new JSObject();
       File titleOverlay = null; String titleText = style.optString("titleText", "");
       if (!titleText.trim().isEmpty()) titleOverlay = createTitleOverlay(work, titleText, style, w, h);
@@ -168,7 +184,7 @@ private void renderWorker(PluginCall call, File source, File voice, File logo) {
         int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
         if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop","1","-i",logo.getAbsolutePath())); }
         if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop","1","-i",titleOverlay.getAbsolutePath())); }
-        a.addAll(Arrays.asList("-t",fmt(len),"-filter_complex",buildFilterGraph(style,w,h,fps,len,p,logoInput,logo,titleInput,titleOverlay,w,h),"-map","[vout]"));
+        a.addAll(Arrays.asList("-t",fmt(len),"-filter_complex",buildFilterGraph(style,w,h,fps,len,p,logoInput,logo,titleInput,titleOverlay,w,h,isLandscape),"-map","[vout]"));
         if (voice!=null) a.addAll(Arrays.asList("-map","1:a:0?","-af","aresample=async=1:first_pts=0,apad")); else a.addAll(Arrays.asList("-map","0:a?"));
         a.addAll(Arrays.asList("-c:v","libopenh264","-b:v",(resBitrate(crf)),"-threads","2","-pix_fmt","yuv420p","-c:a","aac","-b:a","128k","-movflags","+faststart",part.getAbsolutePath()));
         activeSession=executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), len);
@@ -203,15 +219,15 @@ private void renderWorker(PluginCall call, File source, File voice, File logo) {
     return result[0];
   }
 
-
-private double probe(File f) throws Exception {
+  private double probe(File f) throws Exception {
     CountDownLatch latch=new CountDownLatch(1); final double[] d={0};
     FFprobeKit.getMediaInformationAsync(f.getAbsolutePath(), s->{ try { if(s.getMediaInformation()!=null) d[0]=Double.parseDouble(s.getMediaInformation().getDuration()); } catch(Exception ignored){} latch.countDown(); });
     latch.await(30,TimeUnit.SECONDS); return d[0];
   }
 
-  private String buildFilterGraph(JSObject s,int w,int h,int fps,double seconds,int partIndex,int logoInput,File logo,int titleInput,File titleOverlay,int outW,int outH) throws Exception {
-    String base = videoFilter(s,w,h,fps,seconds,partIndex);
+  // ✅ isLandscape parameter ကို ထည့်ထားသည်
+  private String buildFilterGraph(JSObject s,int w,int h,int fps,double seconds,int partIndex,int logoInput,File logo,int titleInput,File titleOverlay,int outW,int outH,boolean isLandscape) throws Exception {
+    String base = videoFilter(s,w,h,fps,seconds,partIndex,isLandscape);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     if (s.optBoolean("blurEnabled", false)) {
@@ -272,12 +288,17 @@ private double probe(File f) throws Exception {
   private double clamp(double v,double min,double max){ return Math.max(min,Math.min(max,v)); }
   private String safeColor(String c){ return c != null && c.matches("#[0-9a-fA-F]{6}") ? "0x"+c.substring(1) : "white"; }
 
-  private String videoFilter(JSObject s,int w,int h,int fps,double seconds,int partIndex) {
+  // ✅ isLandscape parameter ကို ထည့်ပြီး crop logic ကို ချိန်ညှိထားသည်
+  private String videoFilter(JSObject s,int w,int h,int fps,double seconds,int partIndex,boolean isLandscape) {
     String base;
-    if("fit".equals(s.optString("fitMode","fit"))) base="scale="+w+":"+h+":force_original_aspect_ratio=decrease,pad="+w+":"+h+":(ow-iw)/2:(oh-ih)/2:color=black";
-    else {
-      String cropX = "left".equals(s.optString("crop", "center")) ? "0" : "right".equals(s.optString("crop", "center")) ? "iw-ow" : "(iw-ow)/2";
-      base="crop=w='min(iw,ih*9/16)':h='min(ih,iw*16/9)':x='"+cropX+"':y='(ih-oh)/2',scale="+w+":"+h;
+    if("fit".equals(s.optString("fitMode","fit"))) {
+        base="scale="+w+":"+h+":force_original_aspect_ratio=decrease,pad="+w+":"+h+":(ow-iw)/2:(oh-ih)/2:color=black";
+    } else {
+        // 16:9 အတွက် crop logic ကို ချိန်ညှိထားသည်
+        String cropExpr = isLandscape
+            ? "crop=w='min(iw,ih*16/9)':h='min(ih,iw*9/16)':x='(iw-ow)/2':y='(ih-oh)/2'"
+            : "crop=w='min(iw,ih*9/16)':h='min(ih,iw*16/9)':x='(iw-ow)/2':y='(ih-oh)/2'";
+        base = cropExpr + ",scale=" + w + ":" + h;
     }
     double zoom=Math.max(1,Math.min(1.12,s.optDouble("zoom",1.02)));
     if(zoom>1.001) base+=",crop=w='iw/"+zoom+"':h='ih/"+zoom+"':x='(iw-ow)/2':y='(ih-oh)/2',scale="+w+":"+h;
@@ -292,7 +313,7 @@ private double probe(File f) throws Exception {
     return base;
   }
 
-private String resBitrate(int crf){ return crf >= 34 ? "700k" : crf >= 28 ? "1800k" : "3500k"; }
+  private String resBitrate(int crf){ return crf >= 34 ? "700k" : crf >= 28 ? "1800k" : "3500k"; }
   private String fmt(double n){return String.format(Locale.US,"%.3f",n);}
   private void progress(PluginCall c,int p,String stage){JSObject d=new JSObject();d.put("progress",p);d.put("stage",stage);notifyListeners("renderProgress",d);}
 
@@ -313,5 +334,3 @@ private String resBitrate(int crf){ return crf >= 34 ? "700k" : crf >= 28 ? "180
   private void deleteTree(File f){if(f==null||!f.exists())return;if(f.isDirectory()){File[]xs=f.listFiles();if(xs!=null)for(File x:xs)deleteTree(x);}f.delete();}
   @PluginMethod public void cancel(PluginCall call){cancelled=true;FFmpegKit.cancel();call.resolve();}
 }
-
-
