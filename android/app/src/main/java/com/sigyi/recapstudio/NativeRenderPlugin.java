@@ -176,7 +176,10 @@ public class NativeRenderPlugin extends Plugin {
       progress(call,92,"Part အားလုံးကို Merge လုပ်နေပါတယ်…"); File merged=new File(getContext().getCacheDir(),"sigyi_preview_final.mp4"); if (merged.exists()) merged.delete();
       
       activeSession=executeTracked(new String[]{"-y","-f","concat","-safe","0","-i",list.getAbsolutePath(),"-c","copy","-movflags","+faststart",merged.getAbsolutePath()}, call, 90, 6, duration);
-      if(!ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Merge မအောင်မြင်ပါ: "+activeSession.getFailStackTrace());
+      if (!ReturnCode.isSuccess(activeSession.getReturnCode())) {
+    String logs = activeSession.getAllLogsAsString();
+    throw new Exception("Part "+(p+1)+" render မအောင်မြင်ပါ။ FFmpeg မှတ်တမ်း- \n" + (logs != null ? logs : "မှတ်တမ်းမရှိပါ"));
+      }
       
       for (File partFile : parts) partFile.delete(); list.delete();
       progress(call,96,"Movies folder ထဲ သိမ်းနေပါတယ်…"); Uri saved=saveMovies(merged);
