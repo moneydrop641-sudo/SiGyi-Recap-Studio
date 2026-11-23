@@ -19,7 +19,6 @@ import androidx.activity.result.ActivityResult;
 import com.arthenica.ffmpegkit.FFmpegKit;
 import com.arthenica.ffmpegkit.FFmpegSession;
 import com.arthenica.ffmpegkit.FFprobeKit;
-import com.arthenica.ffmpegkit.MediaInformationSession;
 import com.arthenica.ffmpegkit.ReturnCode;
 import com.getcapacitor.*;
 import com.getcapacitor.annotation.ActivityCallback;
@@ -28,12 +27,12 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 @CapacitorPlugin(name = "NativeRender")
 public class NativeRenderPlugin extends Plugin {
   private volatile boolean cancelled = false;
   private volatile FFmpegSession activeSession;
+  private volatile boolean isRendering = false; // ✅ ခလုတ်နှစ်ခါနှိပ်ခြင်းကို တားဆီးရန်
 
   @PluginMethod public void pickVideo(PluginCall call) { pick(call, "video/*", "video"); }
   @PluginMethod public void pickAudio(PluginCall call) { pick(call, "audio/*", "audio"); }
@@ -64,15 +63,9 @@ public class NativeRenderPlugin extends Plugin {
         while ((n = in.read(b)) > 0) out.write(b, 0, n);
         out.getFD().sync();
       }
-      JSObject r = new JSObject();
-      r.put("path", target.getAbsolutePath());
-      r.put("name", displayName(uri));
-      r.put("size", target.length());
-      r.put("mimeType", getContext().getContentResolver().getType(uri));
-      call.resolve(r);
-    } catch (Exception e) {
-      call.reject("Logo ဖိုင်ကို ကူးမရပါ: " + e.getMessage());
-    }
+      JSObject r = new JSObject(); r.put("path", target.getAbsolutePath()); r.put("name", displayName(uri));
+      r.put("size", target.length()); r.put("mimeType", getContext().getContentResolver().getType(uri)); call.resolve(r);
+    } catch (Throwable t) { call.reject("Logo ဖိုင်ကို ကူးမရပါ: " + t.getMessage()); }
   }
 
   private void pick(PluginCall call, String mime, String kind) {
@@ -82,21 +75,13 @@ public class NativeRenderPlugin extends Plugin {
     startActivityForResult(call, i, callback);
   }
 
-  @ActivityCallback
-  private void pickVideoResult(PluginCall call, ActivityResult result) {
-    handlePickResult(call, result, "video");
-  }
-
-  @ActivityCallback
-  private void pickAudioResult(PluginCall call, ActivityResult result) {
-    handlePickResult(call, result, "audio");
-  }
+  @ActivityCallback private void pickVideoResult(PluginCall call, ActivityResult result) { handlePickResult(call, result, "video"); }
+  @ActivityCallback private void pickAudioResult(PluginCall call, ActivityResult result) { handlePickResult(call, result, "audio"); }
 
   private void handlePickResult(PluginCall call, ActivityResult result, String kind) {
     if (call == null) return;
     if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
-      call.reject("ဖိုင်ရွေးချယ်မှုကို ပယ်ဖျက်လိုက်ပါပြီ။");
-      return;
+      call.reject("ဖိုင်ရွေးချယ်မှုကို ပယ်ဖျက်လိုက်ပါပြီ။"); return;
     }
     Uri uri = result.getData().getData();
     try {
@@ -117,15 +102,9 @@ public class NativeRenderPlugin extends Plugin {
         while ((n = in.read(b)) > 0) out.write(b, 0, n);
         out.getFD().sync();
       }
-      JSObject r = new JSObject();
-      r.put("path", target.getAbsolutePath());
-      r.put("name", displayName(uri));
-      r.put("size", target.length());
-      r.put("mimeType", getContext().getContentResolver().getType(uri));
-      call.resolve(r);
-    } catch (Exception e) {
-      call.reject("ဖိုင်ကို app storage ထဲ ကူးမရပါ: " + e.getMessage());
-    }
+      JSObject r = new JSObject(); r.put("path", target.getAbsolutePath()); r.put("name", displayName(uri));
+      r.put("size", target.length()); r.put("mimeType", getContext().getContentResolver().getType(uri)); call.resolve(r);
+    } catch (Throwable t) { call.reject("ဖိုင်ကို app storage ထဲ ကူးမရပါ: " + t.getMessage()); }
   }
 
   private String displayName(Uri uri) {
@@ -134,86 +113,99 @@ public class NativeRenderPlugin extends Plugin {
         int n = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
         if (n >= 0) return c.getString(n);
       }
-    } catch (Exception ignored) {}
+    } catch (Throwable ignored) {}
     return "media";
   }
 
   @PluginMethod public void render(PluginCall call) {
+    if (isRendering) { call.reject("Render လုပ်ဆောင်နေဆဲဖြစ်ပါတယ်။ ပြီးဆုံးတဲ့အထိ စောင့်ပါ။"); return; }
+    
     String vp = call.getString("videoPath"), ap = call.getString("audioPath"), lp = call.getString("logoPath");
     if (vp == null || !new File(vp).isFile()) { call.reject("Video ဖိုင်မတွေ့ပါ။ ပြန်ရွေးပါ။"); return; }
     if (ap != null && !new File(ap).isFile()) { call.reject("Dubbing audio ဖိုင်မတွေ့ပါ။ ပြန်ရွေးပါ။"); return; }
     if (lp != null && !new File(lp).isFile()) { call.reject("Logo ဖိုင်မတွေ့ပါ။ ပြန်ရွေးပါ။"); return; }
+    
     cancelled = false;
+    isRendering = true; // Lock ခံလိုက်ပြီ
     new Thread(() -> renderWorker(call, new File(vp), ap == null ? null : new File(ap), lp == null ? null : new File(lp)), "SiGyiNativeRender").start();
   }
 
   private void renderWorker(PluginCall call, File source, File voice, File logo) {
     File work = new File(getContext().getCacheDir(), "sigyi_job_" + System.currentTimeMillis());
-    if (!work.mkdirs()) { call.reject("Render cache folder မဖန်တီးနိုင်ပါ။ Storage လွတ်နေမှုကို စစ်ပါ။"); return; }
+    if (!work.mkdirs()) { isRendering = false; call.reject("Render cache folder မဖန်တီးနိုင်ပါ။ Storage လွတ်နေမှုကို စစ်ပါ။"); return; }
+    
     try {
-      double duration = probe(source); if (duration <= 0) throw new Exception("Video duration ကို မဖတ်နိုင်ပါ။");
+      double duration = probe(source); 
+      if (duration <= 0) throw new Exception("Video duration ကို မဖတ်နိုင်ပါ။");
 
-      // ✅ Ratio နှစ်မျိုးအတွက် ပြင်ဆင်ထားသော အပိုင်း
       String res = call.getString("resolution", "720p");
       boolean isLandscape = call.getBoolean("landscape", false);
       int w, h, fps = 24, crf = 28;
-      if ("360p".equals(res)) {
-          w = isLandscape ? 640 : 360;
-          h = isLandscape ? 360 : 640;
-          fps = 18; crf = 34;
-      } else if ("1080p".equals(res)) {
-          w = isLandscape ? 1920 : 1080;
-          h = isLandscape ? 1080 : 1920;
-          crf = 27;
-      } else {
-          w = isLandscape ? 1280 : 720;
-          h = isLandscape ? 720 : 1280;
-      }
-      // ✅ ပြင်ဆင်မှု ပြီးဆုံး
+      if ("360p".equals(res)) { w = isLandscape ? 640 : 360; h = isLandscape ? 360 : 640; fps = 18; crf = 34; }
+      else if ("1080p".equals(res)) { w = isLandscape ? 1920 : 1080; h = isLandscape ? 1080 : 1920; crf = 27; }
+      else { w = isLandscape ? 1280 : 720; h = isLandscape ? 720 : 1280; }
 
       JSObject style = call.getObject("style"); if (style == null) style = new JSObject();
       File titleOverlay = null; String titleText = style.optString("titleText", "");
       if (!titleText.trim().isEmpty()) titleOverlay = createTitleOverlay(work, titleText, style, w, h);
+      
       int chunkSeconds = 300; int count = (int)Math.ceil(duration / chunkSeconds);
       List<File> parts = new ArrayList<>();
+      
       for (int p=0; p<count; p++) {
         if (cancelled) throw new Exception("Render ကို ပယ်ဖျက်လိုက်ပါပြီ။");
         double start=p*chunkSeconds, len=Math.min(chunkSeconds,duration-start); File part=new File(work,String.format(Locale.US,"part_%03d.mp4",p+1));
         List<String> a=new ArrayList<>(Arrays.asList("-y","-ss",fmt(start),"-i",source.getAbsolutePath()));
         if (voice!=null) a.addAll(Arrays.asList("-ss",fmt(start),"-i",voice.getAbsolutePath()));
         int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
+        
         if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop","1","-i",logo.getAbsolutePath())); }
         if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop","1","-i",titleOverlay.getAbsolutePath())); }
+        
         a.addAll(Arrays.asList("-t",fmt(len),"-filter_complex",buildFilterGraph(style,w,h,fps,len,p,logoInput,logo,titleInput,titleOverlay,w,h,isLandscape),"-map","[vout]"));
         if (voice!=null) a.addAll(Arrays.asList("-map","1:a:0?","-af","aresample=async=1:first_pts=0,apad")); else a.addAll(Arrays.asList("-map","0:a?"));
         a.addAll(Arrays.asList("-c:v","libopenh264","-b:v",(resBitrate(crf)),"-threads","2","-pix_fmt","yuv420p","-c:a","aac","-b:a","128k","-movflags","+faststart",part.getAbsolutePath()));
+        
         activeSession=executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), len);
         if (cancelled) throw new Exception("Render ကို ပယ်ဖျက်လိုက်ပါပြီ။");
         if (!ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Part "+(p+1)+" render မအောင်မြင်ပါ: "+activeSession.getFailStackTrace());
         parts.add(part); progress(call,10+(int)(((p+1.0)/count)*78),"Part "+(p+1)+"/"+count+" ပြီးပါပြီ");
       }
+      
       File list=new File(work,"parts.txt"); try(FileOutputStream out=new FileOutputStream(list)){ for(File f:parts) out.write(("file '"+f.getAbsolutePath()+"'\n").getBytes("UTF-8")); }
       progress(call,92,"Part အားလုံးကို Merge လုပ်နေပါတယ်…"); File merged=new File(getContext().getCacheDir(),"sigyi_preview_final.mp4"); if (merged.exists()) merged.delete();
+      
       activeSession=executeTracked(new String[]{"-y","-f","concat","-safe","0","-i",list.getAbsolutePath(),"-c","copy","-movflags","+faststart",merged.getAbsolutePath()}, call, 90, 6, duration);
       if(!ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Merge မအောင်မြင်ပါ: "+activeSession.getFailStackTrace());
+      
       for (File partFile : parts) partFile.delete(); list.delete();
       progress(call,96,"Movies folder ထဲ သိမ်းနေပါတယ်…"); Uri saved=saveMovies(merged);
-      File preview=merged;
-      JSObject result=new JSObject(); result.put("savedUri",saved.toString()); result.put("previewPath",preview.getAbsolutePath()); result.put("name","SiGyi_Recap.mp4"); result.put("size",merged.length());
+      JSObject result=new JSObject(); result.put("savedUri",saved.toString()); result.put("previewPath",merged.getAbsolutePath()); result.put("name","SiGyi_Recap.mp4"); result.put("size",merged.length());
       progress(call,100,"Render ပြီးပါပြီ — Movies/SiGyi Recap Studio ထဲ သိမ်းပြီးပါပြီ။"); call.resolve(result);
-    } catch(Exception e){ call.reject(e.getMessage()==null?"Native render မအောင်မြင်ပါ":e.getMessage()); }
-    finally { deleteTree(work); activeSession=null; }
+      
+    } catch (Throwable t) { // ✅ Exception အစား Throwable ကို သုံးထားတာမို့ Error တွေပါ ဖမ်းမိပါပြီ
+      call.reject(t.getMessage()==null?"Native render မအောင်မြင်ပါ: " + t.getClass().getSimpleName():t.getMessage()); 
+    } finally { 
+      deleteTree(work); activeSession=null; isRendering = false; // Lock ဖြေလိုက်ပြီ
+    }
   }
 
   private FFmpegSession executeTracked(String[] args, PluginCall call, int base, int span, double durationSeconds) throws Exception {
     CountDownLatch done = new CountDownLatch(1); final FFmpegSession[] result = {null};
+    final long[] lastNotify = {0}; // ✅ Bridge Flood မဖြစ်အောင် ထိန်းချုပ်ရန်
+    
     FFmpegKit.executeWithArgumentsAsync(args, session -> { result[0] = session; done.countDown(); }, null, stats -> {
       if (durationSeconds > 0) {
-        double seconds = stats.getTime() / 1000.0;
-        int pct = base + (int)(Math.min(1.0, seconds / durationSeconds) * span);
-        progress(call, Math.min(98, pct), "Native FFmpeg render လုပ်နေပါတယ်…");
+        long now = System.currentTimeMillis();
+        if (now - lastNotify[0] > 800) { // 0.8 စက္ကန့်တစ်ခါပဲ UI ကို Update လုပ်မည်
+          lastNotify[0] = now;
+          double seconds = stats.getTime() / 1000.0;
+          int pct = base + (int)(Math.min(1.0, seconds / durationSeconds) * span);
+          progress(call, Math.min(98, pct), "Native FFmpeg render လုပ်နေပါတယ်…");
+        }
       }
     });
+    
     while (!done.await(500, TimeUnit.MILLISECONDS)) { if (cancelled) { FFmpegKit.cancel(); } }
     if (result[0] == null) throw new Exception("FFmpeg session result မရပါ။");
     return result[0];
@@ -221,22 +213,26 @@ public class NativeRenderPlugin extends Plugin {
 
   private double probe(File f) throws Exception {
     CountDownLatch latch=new CountDownLatch(1); final double[] d={0};
-    FFprobeKit.getMediaInformationAsync(f.getAbsolutePath(), s->{ try { if(s.getMediaInformation()!=null) d[0]=Double.parseDouble(s.getMediaInformation().getDuration()); } catch(Exception ignored){} latch.countDown(); });
+    FFprobeKit.getMediaInformationAsync(f.getAbsolutePath(), s->{ try { if(s.getMediaInformation()!=null) d[0]=Double.parseDouble(s.getMediaInformation().getDuration()); } catch(Throwable ignored){} latch.countDown(); });
     latch.await(30,TimeUnit.SECONDS); return d[0];
   }
 
-  // ✅ isLandscape parameter ကို ထည့်ထားသည်
   private String buildFilterGraph(JSObject s,int w,int h,int fps,double seconds,int partIndex,int logoInput,File logo,int titleInput,File titleOverlay,int outW,int outH,boolean isLandscape) throws Exception {
     String base = videoFilter(s,w,h,fps,seconds,partIndex,isLandscape);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
+    
     if (s.optBoolean("blurEnabled", false)) {
       int bw = even((int)(w * clamp(s.optDouble("blurW",84),5,100) / 100.0));
       int bh = even((int)(h * clamp(s.optDouble("blurH",12),3,40) / 100.0));
       int bx = even((int)(w * clamp(s.optDouble("blurX",8),0,90) / 100.0));
       int by = even((int)(h * clamp(s.optDouble("blurY",72),0,90) / 100.0));
       bw = Math.max(2, Math.min(w - bx, bw)); bh = Math.max(2, Math.min(h - by, bh));
-      int sigma = (int)clamp(s.optDouble("blurStrength",18),2,40);
+      
+      // ✅ boxblur radius ကို memory မပြည့်အောင် ကန့်သတ်ထားပါတယ်
+      int maxSigma = Math.max(2, Math.min(bw, bh) / 4); 
+      int sigma = (int)Math.min(maxSigma, clamp(s.optDouble("blurStrength",18),2,40));
+      
       g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",boxblur=").append(sigma).append(":1[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
       current = "blurout";
     }
@@ -286,28 +282,32 @@ public class NativeRenderPlugin extends Plugin {
 
   private int even(int n){ return Math.max(2, n & ~1); }
   private double clamp(double v,double min,double max){ return Math.max(min,Math.min(max,v)); }
-  private String safeColor(String c){ return c != null && c.matches("#[0-9a-fA-F]{6}") ? "0x"+c.substring(1) : "white"; }
 
-  // ✅ isLandscape parameter ကို ထည့်ပြီး crop logic ကို ချိန်ညှိထားသည်
+  // ✅ freezeframes ကို ဖျက်ပြီး zoompan ကို ပေါ့ပါးအောင် ပြင်ထားပါတယ်
   private String videoFilter(JSObject s,int w,int h,int fps,double seconds,int partIndex,boolean isLandscape) {
     String base;
     if("fit".equals(s.optString("fitMode","fit"))) {
         base="scale="+w+":"+h+":force_original_aspect_ratio=decrease,pad="+w+":"+h+":(ow-iw)/2:(oh-ih)/2:color=black";
     } else {
-        // 16:9 အတွက် crop logic ကို ချိန်ညှိထားသည်
         String cropExpr = isLandscape
             ? "crop=w='min(iw,ih*16/9)':h='min(ih,iw*9/16)':x='(iw-ow)/2':y='(ih-oh)/2'"
             : "crop=w='min(iw,ih*9/16)':h='min(ih,iw*16/9)':x='(iw-ow)/2':y='(ih-oh)/2'";
         base = cropExpr + ",scale=" + w + ":" + h;
     }
+    
     double zoom=Math.max(1,Math.min(1.12,s.optDouble("zoom",1.02)));
     if(zoom>1.001) base+=",crop=w='iw/"+zoom+"':h='ih/"+zoom+"':x='(iw-ow)/2':y='(ih-oh)/2',scale="+w+":"+h;
-    base+=",zoompan=z='1.035+0.035*sin(on/"+(fps*5)+"*PI)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s="+w+"x"+h+":fps="+fps;
-    if(s.optBoolean("flip",false)) base+=",hflip"; base+=",fps="+fps+",setsar=1";
-    int total=(int)Math.ceil(seconds*fps); if(partIndex>0) base+=",freezeframes=first=0:last=5:replace=0"; for(int fr=5*fps;fr+5<total;fr+=5*fps) base+=",freezeframes=first="+fr+":last="+(fr+5)+":replace="+fr;
+    
+    // ပိုမိုပေါ့ပါးသော zoompan ကို အသုံးပြုထားသည်
+    base+=",zoompan=z='1.02+0.02*sin(on/"+(fps*5)+"*PI)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s="+w+"x"+h+":fps="+fps;
+    
+    if(s.optBoolean("flip",false)) base+=",hflip"; 
+    base+=",fps="+fps+",setsar=1";
+    
     double br=s.optDouble("brightness",0)/200.0, ct=1+s.optDouble("contrast",0)/100.0, sat=1+s.optDouble("saturation",0)/100.0; String preset=s.optString("filter","cinematic");
     if("mono".equals(preset))sat=0; if("cinematic".equals(preset)){ct*=1.035;sat*=.96;} if("vivid".equals(preset)){ct*=1.05;sat*=1.16;}
     base += String.format(Locale.US,",eq=brightness=%.3f:contrast=%.3f:saturation=%.3f",br,ct,sat);
+    
     int border = Math.max(0, Math.min(18, s.optInt("frameWidth", 0)));
     if (border > 0) { String color = s.optString("frameColor", "#d6ef47").replace("#", "0x"); base += ",drawbox=x=0:y=0:w=iw:h=ih:color="+color+":t="+border; }
     return base;
