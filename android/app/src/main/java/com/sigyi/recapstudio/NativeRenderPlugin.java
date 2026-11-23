@@ -174,29 +174,27 @@ public class NativeRenderPlugin extends Plugin {
         List<String> a = new ArrayList<>(Arrays.asList("-y"));
         
         // ✅ Video Speed ကို ချိန်ညှိမယ် (Audio နဲ့ ကိုက်ညီအောင်)
-        // အကယ်၍ Video က Audio ထက် တိုရင် Video ကို နှေးသွားအောင် (Slow down) လုပ်မယ်
         double speedFactor = 1.0;
         if (voice != null && vDuration < aDuration) {
-            speedFactor = vDuration / aDuration; // ဥပမာ 2/3 = 0.66 (ပိုနှေးသွားမယ်)
+            speedFactor = vDuration / aDuration;
             if (speedFactor < 0.5) speedFactor = 0.5; // သိပ်မနှေးသွားအောင် ကန့်သတ်
         }
 
-        // Video ကို ဖြတ်တောက်မယ် (setpts နဲ့ speed ချိန်ညှိမယ်)
-        if (speedFactor < 1.0) {
-            // setpts=PTS/0.66 = 1.5 ဆ နှေးသွားမယ်
-            a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
-            a.addAll(Arrays.asList("-filter_complex", "[0:v]setpts=" + (1.0/speedFactor) + "*PTS[vout]"));
-        } else {
-            a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
-            a.addAll(Arrays.asList("-filter_complex", buildFilterGraph(style, w, h, fps, len, p, -1, null, -1, null, w, h, isLandscape, false, vDuration)));
-        }
+        a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
+        if (voice != null) a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
         
-        // Audio ကို ထည့်မယ်
+        int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
+        if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
+        if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
+        
+        // ✅ ဒီနေရာမှာ Filter Chain ကို အပြည့်အစုံ ပြန်ပေးလိုက်ပါပြီ (Error မတက်တော့ပါ)
+        String filterComplex = buildFilterGraph(style, w, h, fps, len, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor);
+        a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
+        
         if (voice != null) {
-            a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
-            a.addAll(Arrays.asList("-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k"));
+            a.addAll(Arrays.asList("-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"));
         } else {
-            a.addAll(Arrays.asList("-map", "0:v", "-map", "0:a?"));
+            a.addAll(Arrays.asList("-map", "0:a?"));
         }
         
         a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "4", "-pix_fmt", "yuv420p", "-movflags", "+faststart", part.getAbsolutePath()));
@@ -273,9 +271,9 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  // ✅ buildFilterGraph နဲ့ videoFilter တွေကို ရိုးရှင်းအောင် ပြန်ရေးထားပါတယ် (အမှားကင်းစေရန်)
-  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, boolean useFreeze, double totalVideoDuration) throws Exception {
-    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, useFreeze, totalVideoDuration);
+  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor) throws Exception {
+    // ✅ Speed ကို Filter ထဲမှာတင် ထည့်ပေးလိုက်တဲ့အတွက် ရုပ်နဲ့အသံ ကွက်တိဖြစ်သွားပါပြီ
+    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, speedFactor);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     
@@ -342,7 +340,7 @@ public class NativeRenderPlugin extends Plugin {
   private int even(int n) { return Math.max(2, n & ~1); }
   private double clamp(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
 
-  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, boolean useFreeze, double totalVideoDuration) {
+  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, double speedFactor) {
     String base;
     if ("fit".equals(s.optString("fitMode", "fit"))) {
         base = "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease,pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2:color=black";
@@ -356,6 +354,11 @@ public class NativeRenderPlugin extends Plugin {
     double zoom = Math.max(1, Math.min(1.12, s.optDouble("zoom", 1.02)));
     if (zoom > 1.001) base += ",crop=w='iw/" + zoom + "':h='ih/" + zoom + "':x='(iw-ow)/2':y='(ih-oh)/2',scale=" + w + ":" + h;
     
+    // ✅ Speed Adjust (setpts) ကို ဒီနေရာမှာ ထည့်လိုက်တဲ့အတွက် ရုပ်က အသံနဲ့ ကွက်တိဖြစ်သွားပါပြီ
+    if (speedFactor < 1.0) {
+        base += ",setpts=" + String.format(Locale.US, "%.4f", 1.0/speedFactor) + "*PTS";
+    }
+
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
@@ -424,4 +427,3 @@ public class NativeRenderPlugin extends Plugin {
   
   @PluginMethod public void cancel(PluginCall call) { cancelled = true; FFmpegKit.cancel(); call.resolve(); }
 }
-    
