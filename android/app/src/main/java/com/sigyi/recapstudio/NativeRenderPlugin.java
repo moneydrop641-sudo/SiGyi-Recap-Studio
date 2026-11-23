@@ -134,7 +134,7 @@ public class NativeRenderPlugin extends Plugin {
     File work = new File(getContext().getCacheDir(), "sigyi_job_" + System.currentTimeMillis());
     if (!work.mkdirs()) { isRendering = false; call.reject("Render cache folder မဖန်တီးနိုင်ပါ။ Storage လွတ်နေမှုကို စစ်ပါ။"); return; }
     
-    int currentPart = 1; // ✅ Error မတက်အောင် အပြင်မှာ ကြေညာထားပါတယ်
+    int currentPart = 1;
     
     try {
       double duration = probe(source); 
@@ -155,7 +155,7 @@ public class NativeRenderPlugin extends Plugin {
       List<File> parts = new ArrayList<>();
       
       for (int p = 0; p < count; p++) {
-        currentPart = p + 1; // ✅ Loop ထဲမှာ Update လုပ်ပါတယ်
+        currentPart = p + 1;
         
         if (cancelled) throw new Exception("Render ကို ပယ်ဖျက်လိုက်ပါပြီ။");
         double start = p * chunkSeconds, len = Math.min(chunkSeconds, duration - start); 
@@ -172,7 +172,6 @@ public class NativeRenderPlugin extends Plugin {
         if (voice != null) a.addAll(Arrays.asList("-map", "1:a:0?", "-af", "aresample=async=1:first_pts=0,apad")); 
         else a.addAll(Arrays.asList("-map", "0:a?"));
         
-        // ✅ libopenh264 အစား mpeg4 ကို သုံးထားတဲ့အတွက် encoder မရှိလို့ error တက်တာ မရှိတော့ပါ
         a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", part.getAbsolutePath()));
         
         activeSession = executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), len);
@@ -336,12 +335,22 @@ public class NativeRenderPlugin extends Plugin {
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
+    // ✅ eq filter မပါတဲ့အတွက် colorlevels နဲ့ hue ကို ပြောင်းသုံးထားပါတယ်
     double br = s.optDouble("brightness", 0) / 200.0, ct = 1 + s.optDouble("contrast", 0) / 100.0, sat = 1 + s.optDouble("saturation", 0) / 100.0; 
     String preset = s.optString("filter", "cinematic");
     if ("mono".equals(preset)) sat = 0; 
     if ("cinematic".equals(preset)) { ct *= 1.035; sat *= .96; } 
     if ("vivid".equals(preset)) { ct *= 1.05; sat *= 1.16; }
-    base += String.format(Locale.US, ",eq=brightness=%.3f:contrast=%.3f:saturation=%.3f", br, ct, sat);
+
+    double inMin = Math.max(0.0, 0.5 - (ct / 2.0) + br);
+    double inMax = Math.min(1.0, 0.5 + (ct / 2.0) + br);
+    double inSat = Math.max(0.0, Math.min(1.0, sat)); 
+
+    base += String.format(Locale.US, ",colorlevels=rimin=%.3f:gimin=%.3f:bimin=%.3f:rimax=%.3f:gimax=%.3f:bimax=%.3f", inMin, inMin, inMin, inMax, inMax, inMax);
+
+    if (inSat != 1.0) {
+        base += String.format(Locale.US, ",hue=s=%.3f", inSat);
+    }
     
     int border = Math.max(0, Math.min(18, s.optInt("frameWidth", 0)));
     if (border > 0) { 
@@ -395,4 +404,4 @@ public class NativeRenderPlugin extends Plugin {
   }
   
   @PluginMethod public void cancel(PluginCall call) { cancelled = true; FFmpegKit.cancel(); call.resolve(); }
-    }
+}
