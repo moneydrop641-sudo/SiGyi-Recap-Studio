@@ -36,8 +36,6 @@ public class NativeRenderPlugin extends Plugin {
 
   @PluginMethod public void pickVideo(PluginCall call) { pick(call, "video/*", "video"); }
   @PluginMethod public void pickAudio(PluginCall call) { pick(call, "audio/*", "audio"); }
-
-  // TTS ဖိုင်တွေကို App ထဲကို သိမ်းဖို့ (Download Folder ကနေ ရွေးလို့ရမယ်)
   @PluginMethod public void pickTtsFile(PluginCall call) { pick(call, "audio/*", "tts"); }
 
   @PluginMethod public void pickLogo(PluginCall call) {
@@ -97,7 +95,7 @@ public class NativeRenderPlugin extends Plugin {
       File dir = new File(getContext().getFilesDir(), "media");
       if (!dir.exists() && !dir.mkdirs()) throw new Exception("App storage မဖန်တီးနိုင်ပါ");
       
-      if (!"tts".equals(kind)) { // TTS မဟုတ်ရင် အဟောင်းတွေ ရှင်းမယ်
+      if (!"tts".equals(kind)) {
           File[] previous = dir.listFiles();
           if (previous != null) for (File old : previous) if (old.getName().startsWith(kind + "_")) old.delete();
       }
@@ -144,9 +142,10 @@ public class NativeRenderPlugin extends Plugin {
     int currentPart = 1;
     
     try {
-      // ✅ Audio ကို အဓိကထားပြီး Duration ယူမယ် (Audio မရှိရင် Video အတိုင်း)
       double vDuration = probe(source);
       double aDuration = voice != null ? probe(voice) : vDuration;
+      
+      // ✅ Audio ကို အဓိကထားပြီး Duration သတ်မှတ်မယ်
       double finalDuration = voice != null ? aDuration : vDuration;
 
       if (finalDuration <= 0) throw new Exception("Duration မဖတ်နိုင်ပါ။");
@@ -162,7 +161,6 @@ public class NativeRenderPlugin extends Plugin {
       File titleOverlay = null; String titleText = style.optString("titleText", "");
       if (!titleText.trim().isEmpty()) titleOverlay = createTitleOverlay(work, titleText, style, w, h);
       
-      // ✅ ၅ မိနစ် (၃၀၀ စက္ကန့်) တစ်ပိုင်း ခွဲမယ်
       int chunkSeconds = 300; int count = (int)Math.ceil(finalDuration / chunkSeconds);
       List<File> parts = new ArrayList<>();
       
@@ -175,26 +173,33 @@ public class NativeRenderPlugin extends Plugin {
         
         List<String> a = new ArrayList<>(Arrays.asList("-y"));
         
-        // ✅ Video ကို ဖြတ်တောက်မယ် (လိုအပ်ရင် နောက်ဆုံး frame မှာ ရပ်ထားမယ်)
-        a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
-        if (voice != null) a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
-        
-        int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
-        if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
-        if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
-        
-        // ✅ 16:9 ဖြစ်ရင်ပဲ Freeze Frame ထည့်မယ်၊ 9:16 ဆိုရင် မထည့်ဘူး
-        boolean useFreeze = isLandscape;
-        a.addAll(Arrays.asList("-filter_complex", buildFilterGraph(style, w, h, fps, len, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, useFreeze, vDuration), "-map", "[vout]"));
-        
-        if (voice != null) {
-            // ✅ Audio ကို မူရင်းအတိုင်း ထည့်မယ်
-            a.addAll(Arrays.asList("-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"));
+        // ✅ Video Speed ကို ချိန်ညှိမယ် (Audio နဲ့ ကိုက်ညီအောင်)
+        // အကယ်၍ Video က Audio ထက် တိုရင် Video ကို နှေးသွားအောင် (Slow down) လုပ်မယ်
+        double speedFactor = 1.0;
+        if (voice != null && vDuration < aDuration) {
+            speedFactor = vDuration / aDuration; // ဥပမာ 2/3 = 0.66 (ပိုနှေးသွားမယ်)
+            if (speedFactor < 0.5) speedFactor = 0.5; // သိပ်မနှေးသွားအောင် ကန့်သတ်
+        }
+
+        // Video ကို ဖြတ်တောက်မယ် (setpts နဲ့ speed ချိန်ညှိမယ်)
+        if (speedFactor < 1.0) {
+            // setpts=PTS/0.66 = 1.5 ဆ နှေးသွားမယ်
+            a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
+            a.addAll(Arrays.asList("-filter_complex", "[0:v]setpts=" + (1.0/speedFactor) + "*PTS[vout]"));
         } else {
-            a.addAll(Arrays.asList("-map", "0:a?"));
+            a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
+            a.addAll(Arrays.asList("-filter_complex", buildFilterGraph(style, w, h, fps, len, p, -1, null, -1, null, w, h, isLandscape, false, vDuration)));
         }
         
-        a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "2", "-pix_fmt", "yuv420p", "-movflags", "+faststart", part.getAbsolutePath()));
+        // Audio ကို ထည့်မယ်
+        if (voice != null) {
+            a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
+            a.addAll(Arrays.asList("-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k"));
+        } else {
+            a.addAll(Arrays.asList("-map", "0:v", "-map", "0:a?"));
+        }
+        
+        a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "4", "-pix_fmt", "yuv420p", "-movflags", "+faststart", part.getAbsolutePath()));
         
         activeSession = executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), len, "Part " + currentPart + "/" + count + " render လုပ်နေပါတယ်...");
         
@@ -204,11 +209,9 @@ public class NativeRenderPlugin extends Plugin {
         }
         
         parts.add(part); 
-        // ✅ Part တစ်ခုပြီးတိုင်း Progress ပြမယ်
         progress(call, 10 + (int)(((p + 1.0)/count)*78), "Part " + currentPart + "/" + count + " ပြီးပါပြီ");
       }
       
-      // ✅ အားလုံးပြီးရင် ပေါင်းမယ်
       progress(call, 92, "အားလုံးကို ပေါင်းနေပါတယ်..."); 
       File list = new File(work, "parts.txt"); 
       try (FileOutputStream out = new FileOutputStream(list)) { 
@@ -270,6 +273,7 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
+  // ✅ buildFilterGraph နဲ့ videoFilter တွေကို ရိုးရှင်းအောင် ပြန်ရေးထားပါတယ် (အမှားကင်းစေရန်)
   private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, boolean useFreeze, double totalVideoDuration) throws Exception {
     String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, useFreeze, totalVideoDuration);
     String current = "base";
@@ -285,7 +289,7 @@ public class NativeRenderPlugin extends Plugin {
       int maxSigma = Math.max(2, Math.min(bw, bh) / 4); 
       int sigma = (int)Math.min(maxSigma, clamp(s.optDouble("blurStrength", 18), 2, 40));
       
-      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",boxblur=").append(sigma).append(":1[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
+      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",boxblur=luma_radius=").append(sigma).append(":luma_power=1[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
       current = "blurout";
     }
     
@@ -352,13 +356,6 @@ public class NativeRenderPlugin extends Plugin {
     double zoom = Math.max(1, Math.min(1.12, s.optDouble("zoom", 1.02)));
     if (zoom > 1.001) base += ",crop=w='iw/" + zoom + "':h='ih/" + zoom + "':x='(iw-ow)/2':y='(ih-oh)/2',scale=" + w + ":" + h;
     
-    // ✅ Freeze Frame (16:9 မှာပဲ ထည့်မယ်)
-    if (useFreeze && "fit".equals(s.optString("fitMode", "fit"))) {
-        // အကယ်၍ Video က Audio ထက် တိုရင် နောက်ဆုံး frame မှာ ရပ်ထားမယ်
-        base += ",tpad=stop_mode=clone:stop_duration=10";
-    }
-
-    base += ",zoompan=z='1.02+0.02*sin(on/" + (fps * 5) + "*PI)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=" + w + "x" + h + ":fps=" + fps;
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
@@ -373,7 +370,6 @@ public class NativeRenderPlugin extends Plugin {
     double inSat = Math.max(0.0, Math.min(1.0, sat)); 
 
     base += String.format(Locale.US, ",colorlevels=rimin=%.3f:gimin=%.3f:bimin=%.3f:rimax=%.3f:gimax=%.3f:bimax=%.3f", inMin, inMin, inMin, inMax, inMax, inMax);
-
     if (inSat != 1.0) base += String.format(Locale.US, ",hue=s=%.3f", inSat);
     
     int border = Math.max(0, Math.min(18, s.optInt("frameWidth", 0)));
@@ -428,3 +424,4 @@ public class NativeRenderPlugin extends Plugin {
   
   @PluginMethod public void cancel(PluginCall call) { cancelled = true; FFmpegKit.cancel(); call.resolve(); }
 }
+    
