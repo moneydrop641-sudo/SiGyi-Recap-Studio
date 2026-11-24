@@ -12,14 +12,6 @@ const steps = [
   { id: 4, en: 'Render', mm: 'ဗီဒီယိုထုတ်ရန်' }
 ];
 
-const sampleSegments = [
-  { start: 0, end: 4.8, original: 'In the middle of the city stands a door nobody has opened for years.', text: 'မြို့ရဲ့အလယ်မှာ နှစ်ပေါင်းများစွာ မဖွင့်ဖြစ်သေးတဲ့ တံခါးတစ်ချပ် ရှိနေပါတယ်။' },
-  { start: 4.8, end: 10.2, original: 'Behind that door hides a secret that not everyone knows.', text: 'အဲဒီတံခါးရဲ့နောက်ကွယ်မှာတော့ လူတိုင်းမသိတဲ့ လျှို့ဝှက်ချက်တစ်ခု ရှိနေခဲ့တယ်။' },
-  { start: 10.2, end: 16.7, original: 'He went in alone to find the truth.', text: 'သူက အမှန်တရားကို ရှာဖို့ တစ်ယောက်တည်း ဝင်သွားလိုက်ပါတယ်။' }
-];
-
-const sampleRecap = 'မြို့အလယ်က ပိတ်ထားတဲ့ တံခါးဟောင်းတစ်ချပ်နောက်မှာ လူတိုင်းမသိတဲ့ လျှို့ဝှက်ချက်တစ်ခု ရှိနေပါတယ်။ အမှန်တရားကို သိချင်တဲ့သူက အရဲစွန့်ပြီး အဲဒီတံခါးကို ဖွင့်လိုက်တဲ့အချိန်မှာတော့ အရာအားလုံးက မျှော်လင့်ထားတာထက် ပိုပြီး အန္တရာယ်များနေခဲ့ပါတယ်။';
-
 const state = {
   step: 0,
   captionsOn: true,
@@ -35,9 +27,14 @@ const state = {
   renderStage: '',
   renderError: '',
   outputUrl: '',
+  nativeSavedUri: null,
   logoFile: null,
   logoUrl: '',
+  logoNativePath: null,
   logoPosition: 'top-right',
+  isLandscape: false, // ✅ 16:9 / 9:16 ရွေးချယ်မှု (မူရင်းက 9:16)
+  elapsedTime: '00:00', // ✅ ကြာချိန်
+  remainingTime: '00:00', // ✅ ခန့်မှန်းချိန်
   toast: '',
   modal: '',
   style: {
@@ -94,8 +91,6 @@ function sourceName() {
   return state.file?.name || 'မရွေးရသေးပါ';
 }
 
-
-
 function setText(selector, value) {
   const el = document.querySelector(selector);
   if (el) el.textContent = value;
@@ -144,7 +139,6 @@ function render() {
           <div class="breadcrumb"><span>Studio</span><b>/</b><strong>${steps.find((item) => item.id === state.step)?.en || 'Studio'}</strong></div>
           <div class="top-actions">
             <div class="privacy-chip"><span class="status-dot"></span> ${isNativeAndroid ? 'Android native processing' : 'Local browser processing'}</div>
-            
             <button class="avatar-button" type="button">SG</button>
           </div>
         </header>
@@ -157,7 +151,6 @@ function render() {
               <p>ဗီဒီယိုတင်ပြီး style ကို ပြင်ဆင်ပါ။ Script ရေးခြင်းနဲ့ အသံထုတ်ခြင်း မပါဘဲ local MP4 ထုတ်နိုင်ပါတယ်။</p>
             </div>
             <div class="heading-actions">
-              
               <button class="outline-button" type="button" data-action="load-demo"><span>◉</span> Try a sample</button>
             </div>
           </section>
@@ -182,8 +175,7 @@ function render() {
         </div>
       </main>
 
-      <nav class="mobile-nav"><button class="active">✦<span>Studio</span></button><button>◫<span>Projects</span></button><button>◌<span>Settings</span></button><button>◌<span>Settings</span></button></nav>
-      
+      <nav class="mobile-nav"><button class="active">✦<span>Studio</span></button><button>◫<span>Projects</span></button><button>◌<span>Settings</span></button></nav>
     </div>
   `;
   bindEvents();
@@ -209,8 +201,6 @@ function previewFilter() {
   return `brightness(${100 + state.style.brightness / 2}%) contrast(${100 + state.style.contrast}%) saturate(${100 + state.style.saturation}%) ${preset}`;
 }
 
-
-// update the live preview WITHOUT re-rendering the whole app (keeps slider drags smooth)
 function applyPreview() {
   const st = state.style;
   const canvas = document.querySelector('.editor-canvas');
@@ -230,30 +220,12 @@ function applyPreview() {
     media.style.background = '#080a0b';
     media.style.objectPosition = st.crop === 'left' ? '0% 50%' : st.crop === 'right' ? '100% 50%' : '50% 50%';
   }
-  const cap = canvas.querySelector('.subtitle-preview');
-  if (cap) {
-    cap.style.top = `${st.subY + st.subtitleBlur / 2}%`;
-    cap.style.bottom = 'auto';
-    cap.style.transform = 'translateY(-50%)';
-    cap.style.display = state.captionsOn ? 'block' : 'none';
-    cap.style.color = st.subtitleColor;
-    cap.style.background = `${st.subtitleBg}c7`;
-    cap.style.textShadow = '-1px -1px 0 #111, 1px -1px 0 #111, -1px 1px 0 #111, 1px 1px 0 #111';
-    cap.style.fontSize = `${12 * (Number(st.subtitleFontSize || 20) / 20)}px`;
-    cap.style.padding = '3px 9px';
-    cap.style.borderRadius = '6px';
-    cap.style.width = 'auto';
-    cap.style.maxWidth = '88%';
-    cap.style.left = '50%';
-    cap.style.marginLeft = '0';
-    cap.style.transform = 'translate(-50%, -50%)';
-  }
 }
 
 function styleStage() {
   const st = state.style;
   return `<div class="stage-header compact"><div><div class="stage-kicker">STEP 02 / VIDEO STYLE</div><h2>Make it yours.</h2><p>စာတန်းရှိတဲ့နေရာကိုသာ Blur လုပ်ပါ။ Logo ကို ညာဘက်အပေါ်မှာထားပြီး Title ကို ကိုယ်ကြိုက်တဲ့နေရာ၊ အရွယ်အစား၊ အရောင်နဲ့ ထည့်နိုင်ပါတယ်။</p></div><div class="stage-badge"><span class="badge-dot"></span> Live preview</div></div>
-  <div class="style-layout"><div class="editor-canvas-wrap"><div class="canvas-toolbar"><span class="mini-label">9:16 SHORT-FORM PREVIEW</span><div><button class="canvas-icon ${st.flip ? 'active' : ''}" type="button" data-action="flip">⇆</button><button class="canvas-icon" type="button" data-action="fit">⛶</button></div></div>
+  <div class="style-layout"><div class="editor-canvas-wrap"><div class="canvas-toolbar"><span class="mini-label">${state.isLandscape ? '16:9 LANDSCAPE PREVIEW' : '9:16 SHORT-FORM PREVIEW'}</span><div><button class="canvas-icon ${st.flip ? 'active' : ''}" type="button" data-action="flip">⇆</button><button class="canvas-icon" type="button" data-action="fit">⛶</button></div></div>
   <div class="editor-canvas">${state.demo ? '<div class="demo-frame editor-demo"><div class="demo-glow"></div><div class="demo-door">◈</div><span>SAMPLE SCENE</span></div>' : state.videoUrl ? `<video class="editor-video" src="${state.videoUrl}" controls playsinline muted></video>` : '<div class="empty-preview"><span>▣</span><small>Video ကို အရင်ရွေးပါ</small></div>'}<div class="subtitle-blur"></div>${state.logoUrl ? `<img class="logo-preview" src="${state.logoUrl}" alt="Logo preview" />` : ''}<div class="title-preview">${escapeHtml(st.titleText)}</div></div>
   <div class="canvas-footer"><span><i class="green-dot"></i> Preview synced with render</span><span>${state.resolution} · ${formatTime(state.metadata?.duration)}</span></div></div>
   <div class="controls-panel">
@@ -274,8 +246,9 @@ function rangeControl(label, key, value, min, max, suffix, step = 1) {
 
 function renderStage() {
   const complete = state.renderStatus === 'complete'; const working = state.renderStatus === 'working';
-  return `<div class="stage-header compact"><div><div class="stage-kicker">STEP 03 / RENDER</div><h2>${complete ? 'Your video is ready.' : 'Ready for the final render?'}</h2><p>${complete ? 'Preview ပြီး download လုပ်နိုင်ပါပြီ။' : '5 မိနစ်စီ Part ခွဲပြီး 5 စက္ကန့်တစ်ခါ Freeze Frame ထည့်ကာ Local MP4 အဖြစ် Render / Merge လုပ်ပါမယ်။'}</p></div><div class="stage-badge ${complete ? 'success' : ''}"><span class="badge-dot"></span> ${complete ? 'Export complete' : working ? 'Rendering locally' : 'Review ready'}</div></div>${complete ? `<div class="result-layout"><div class="result-video-shell video-shell">${state.outputUrl ? `<video src="${state.outputUrl}" controls playsinline></video>` : '<div class="render-placeholder"><span>✓</span></div>'}<div class="video-corner-tag">FINAL · MP4</div></div><div class="result-details"><div class="result-kicker">FINAL VIDEO</div><h3>${escapeHtml(sourceName().replace(/\.[^/.]+$/, ''))}</h3><p>Local render · Style applied · ${state.audioFile ? 'Uploaded dubbing audio' : 'Original audio preserved'}${!isNativeAndroid && state.logoFile ? ' · Logo overlay' : ''}</p><div class="preview-before-download">▶ Download မလုပ်ခင် preview ကို အရင်ကြည့်ပါ။</div><div class="result-meta"><span><b>9:16</b> format</span><span><b>${state.resolution}</b> export</span><span><b>MP4</b> export</span></div>${state.nativeSavedUri ? '<div class="ready-callout"><span>✓</span><div><strong>ဖုန်းထဲ သိမ်းပြီးပါပြီ</strong><p>Movies / SiGyi Recap Studio folder ထဲမှာ MP4 ရှိပါတယ်။</p></div></div>' : `<a class="primary-button wide download-button" href="${state.outputUrl || '#'}" download="sigyi-video.mp4"><span>↓</span> Download MP4 <span class="button-arrow">→</span></a>`}<button class="outline-button wide" type="button" data-action="reset">＋ Start another video</button></div></div>` : `<div class="render-review"><div class="review-card"><div class="review-icon">✦</div><div><strong>Local video render</strong><p>Video ကို 5 မိနစ်စီ Part ခွဲ Render လုပ်ပြီး နောက်ဆုံး MP4 တစ်ဖိုင်အဖြစ် Merge လုပ်ပါမယ်။ 5 စက္ကန့်တစ်ခါ Freeze Frame ပါဝင်ပါတယ်။</p></div><span class="review-check">✓</span></div><div class="review-list"><div><span class="review-thumb">▣</span><span><strong>Source video</strong><small>${escapeHtml(sourceName())}</small></span><b>✓</b></div><div><span class="review-thumb blue">◌</span><span><strong>Visual treatment</strong><small>${isNativeAndroid ? 'Subtitle mask, logo, title, crop, zoom, color, frame' : 'Subtitle mask, logo, title, crop, filter, frame'}</small></span><b>✓</b></div><div><span class="review-thumb coral">▣</span><span><strong>Original audio</strong><small>${state.audioFile ? 'Uploaded MP3/WAV dubbing audio' : 'Original video audio'}</small></span><b>✓</b></div></div>${working ? `<div class="render-progress-card"><div class="progress-head"><span id="render-stage">${escapeHtml(state.renderStage || (isNativeAndroid ? 'Native FFmpeg rendering' : 'Rendering with ffmpeg.wasm'))}</span><strong id="render-pct">${Math.round(state.renderProgress)}%</strong></div><div class="big-progress"><i id="render-bar" style="width:${state.renderProgress}%"></i></div><p>ဖုန်းကို lock မလုပ်ပါနဲ့။ Render ပြီးတဲ့အထိ ဒီ tab ကို ဖွင့်ထားပါ။</p><button class="text-button danger" type="button" data-action="cancel-render">Cancel render</button></div>` : `<button class="primary-button render-button" type="button" data-action="render"><span class="button-spark">✦</span> Render MP4 <span class="button-arrow">→</span></button><div class="render-warning"><span>i</span><span>5 မိနစ်စီ Part Render + Merge လုပ်ပါမယ်။ Freeze Frame ကို 5 စက္ကန့်တစ်ခါ ထည့်ပါမယ်။ ${isNativeAndroid ? 'Native renderer က part တစ်ခုချင်းစီကို disk ပေါ်ရေးပြီး merge လုပ်ပါမယ်။ Storage လွတ်နေရာ လုံလောက်အောင်ထားပါ။' : 'Browser memory ကန့်သတ်ချက်ကြောင့် 1 နာရီစာ Video ကို browser တိုင်းမှာ အာမခံမရပါ။ 360p နဲ့ အရင်စမ်းပါ။'}</span></div>`}</div>`}${state.renderError ? `<div class="inline-error large">${escapeHtml(state.renderError)}</div>` : ''}<div class="stage-footer"><button class="secondary-button" type="button" data-step="3">← Back to style</button><span class="footer-hint">Local-only · No account required</span></div>`;
+  return `<div class="stage-header compact"><div><div class="stage-kicker">STEP 03 / RENDER</div><h2>${complete ? 'Your video is ready.' : 'Ready for the final render?'}</h2><p>${complete ? 'Preview ပြီး download လုပ်နိုင်ပါပြီ။' : '5 မိနစ်စီ Part ခွဲပြီး Local MP4 အဖြစ် Render / Merge လုပ်ပါမယ်။'}</p></div><div class="stage-badge ${complete ? 'success' : ''}"><span class="badge-dot"></span> ${complete ? 'Export complete' : working ? 'Rendering locally' : 'Review ready'}</div></div>${complete ? `<div class="result-layout"><div class="result-video-shell video-shell">${state.outputUrl ? `<video src="${state.outputUrl}" controls playsinline></video>` : '<div class="render-placeholder"><span>✓</span></div>'}<div class="video-corner-tag">FINAL · MP4</div></div><div class="result-details"><div class="result-kicker">FINAL VIDEO</div><h3>${escapeHtml(sourceName().replace(/\.[^/.]+$/, ''))}</h3><p>Local render · Style applied · ${state.audioFile ? 'Uploaded dubbing audio' : 'Original audio preserved'}</p><div class="preview-before-download">▶ Download မလုပ်ခင် preview ကို အရင်ကြည့်ပါ။</div><div class="result-meta"><span><b>${state.isLandscape ? '16:9' : '9:16'}</b> format</span><span><b>${state.resolution}</b> export</span><span><b>MP4</b> export</span></div>${state.nativeSavedUri ? '<div class="ready-callout"><span>✓</span><div><strong>ဖုန်းထဲ သိမ်းပြီးပါပြီ</strong><p>Movies / SiGyi Recap Studio folder ထဲမှာ MP4 ရှိပါတယ်။</p></div></div>' : `<a class="primary-button wide download-button" href="${state.outputUrl || '#'}" download="sigyi-video.mp4"><span>↓</span> Download MP4 <span class="button-arrow">→</span></a>`}<button class="outline-button wide" type="button" data-action="reset">＋ Start another video</button></div></div>` : `<div class="render-review"><div class="review-card"><div class="review-icon">✦</div><div><strong>Local video render</strong><p>Video ကို 5 မိနစ်စီ Part ခွဲ Render လုပ်ပြီး နောက်ဆုံး MP4 တစ်ဖိုင်အဖြစ် Merge လုပ်ပါမယ်။</p></div><span class="review-check">✓</span></div><div class="review-list"><div><span class="review-thumb">▣</span><span><strong>Source video</strong><small>${escapeHtml(sourceName())}</small></span><b>✓</b></div><div><span class="review-thumb blue">◌</span><span><strong>Visual treatment</strong><small>${isNativeAndroid ? 'Subtitle mask, logo, title, crop, zoom, color, frame' : 'Subtitle mask, logo, title, crop, filter, frame'}</small></span><b>✓</b></div><div><span class="review-thumb coral">▣</span><span><strong>Original audio</strong><small>${state.audioFile ? 'Uploaded MP3/WAV dubbing audio' : 'Original video audio'}</small></span><b>✓</b></div></div>${working ? `<div class="render-progress-card"><div class="progress-head"><span id="render-stage">${escapeHtml(state.renderStage || (isNativeAndroid ? 'Native FFmpeg rendering' : 'Rendering with ffmpeg.wasm'))}</span><strong id="render-pct">${Math.round(state.renderProgress)}%</strong></div><div class="big-progress"><i id="render-bar" style="width:${state.renderProgress}%"></i></div><p style="font-size:14px; color:#666; margin-top:10px;">⏱️ ကြာချိန်: ${state.elapsedTime} | ⏳ ခန့်မှန်း: ${state.remainingTime}</p><p>ဖုန်းကို lock မလုပ်ပါနဲ့။ Render ပြီးတဲ့အထိ ဒီ tab ကို ဖွင့်ထားပါ။</p><button class="text-button danger" type="button" data-action="cancel-render">Cancel render</button></div>` : `<button class="primary-button render-button" type="button" data-action="render"><span class="button-spark">✦</span> Render MP4 <span class="button-arrow">→</span></button><div class="render-warning"><span>i</span><span>5 မိနစ်စီ Part Render + Merge လုပ်ပါမယ်။ ${isNativeAndroid ? 'Native renderer က part တစ်ခုချင်းစီကို disk ပေါ်ရေးပြီး merge လုပ်ပါမယ်။ Storage လွတ်နေရာ လုံလောက်အောင်ထားပါ။' : 'Browser memory ကန့်သတ်ချက်ကြောင့် 1 နာရီစာ Video ကို browser တိုင်းမှာ အာမခံမရပါ။ 360p နဲ့ အရင်စမ်းပါ။'}</span></div>`}</div>`}${state.renderError ? `<div class="inline-error large">${escapeHtml(state.renderError)}</div>` : ''}<div class="stage-footer"><button class="secondary-button" type="button" data-step="3">← Back to style</button><span class="footer-hint">Local-only · No account required</span></div>`;
 }
+
 function railMarkup() {
   return `<div class="rail-card workflow-card"><div class="rail-heading"><span>YOUR WORKFLOW</span><span class="rail-percent">${state.step === 0 ? 0 : state.step === 3 ? 50 : 100}%</span></div><div class="workflow-list">${steps.map((step) => `<button type="button" class="workflow-row ${state.step === step.id ? 'current' : ''} ${state.step > step.id ? 'complete' : ''}" data-step="${step.id}"><span class="workflow-bullet">${state.step > step.id ? '✓' : step.id === 0 ? '01' : step.id === 3 ? '02' : '03'}</span><span><strong>${step.en}</strong><small>${step.id === 0 ? 'Choose a local video file' : step.id === 3 ? 'Blur, crop & adjust' : 'Export MP4 locally'}</small></span><i>${state.step > step.id ? 'done' : state.step === step.id ? 'now' : ''}</i></button>`).join('')}</div></div><div class="rail-card key-card"><div class="key-card-top"><div class="key-orb">◉</div><div><strong>Local video mode</strong><small>Upload / Style / Render</small></div></div><p>Script ရေးခြင်းနဲ့ အသံထုတ်ခြင်း မပါဘဲ video upload, style နဲ့ render ကိုသာ အသုံးပြုပါမယ်။</p></div><div class="rail-card support-card"><span class="support-mark">◎</span><div><strong>Quick start</strong><p>Short clip တစ်ခုနဲ့ အရင်စမ်းပြီး render speed ကို စစ်ပါ။</p></div></div>`;
 }
@@ -291,15 +264,24 @@ function bindEvents() {
   document.querySelectorAll('[data-style-filter]').forEach((input) => input.addEventListener('change', () => { state.style.filter = input.value; applyPreview(); }));
   document.querySelectorAll('[data-fit-mode]').forEach((input) => input.addEventListener('change', () => { state.style.fitMode = input.value; applyPreview(); }));
   document.querySelectorAll('[data-resolution]').forEach((input) => input.addEventListener('change', () => { state.resolution = input.value; setToast(`${state.resolution} resolution ကို ရွေးထားပါတယ်။`); }));
+  
+  // ✅ Ratio ရွေးချယ်မှု (16:9 / 9:16)
+  document.querySelectorAll('[data-ratio]').forEach((input) => input.addEventListener('change', () => { 
+      state.isLandscape = input.value === '16:9'; 
+      setToast(state.isLandscape ? '16:9 (အလျားလိုက်) ရွေးထားပါတယ်' : '9:16 (ဒေါင်လိုက်) ရွေးထားပါတယ်'); 
+      render(); 
+  }));
+
   const input = document.querySelector('#video-input'); if (input) input.addEventListener('change', (event) => loadVideo(event.target.files?.[0]));
   const audioInput = document.querySelector('#audio-input');
   if (audioInput) audioInput.addEventListener('change', (event) => loadAudio(event.target.files?.[0]));
   const logoInput = document.querySelector('#logo-input'); if (logoInput) logoInput.addEventListener('change', (event) => { const file = event.target.files?.[0]; if (!file || !file.type.startsWith('image/')) return setToast('Logo အတွက် image ဖိုင် ရွေးပေးပါ။'); if (state.logoUrl) URL.revokeObjectURL(state.logoUrl); state.logoFile = file; state.logoUrl = URL.createObjectURL(file); state.logoNativePath = null; render(); });
-  document.querySelectorAll('[data-logo-position]').forEach((input) => input.addEventListener('change', () => { state.logoPosition = input.value; }));
+  
   const dropzone = document.querySelector('#dropzone'); if (dropzone) { dropzone.addEventListener('dragover', (event) => { event.preventDefault(); dropzone.classList.add('dragging'); }); dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging')); dropzone.addEventListener('drop', (event) => { event.preventDefault(); dropzone.classList.remove('dragging'); loadVideo(event.dataTransfer.files?.[0]); }); }
   if (state.step === 3) applyPreview();
   const video = document.querySelector('#source-video'); if (video) video.addEventListener('loadedmetadata', () => { state.metadata.duration = video.duration; });
 }
+
 async function handleAction(action) {
   if (action === 'pick-video') return isNativeAndroid ? pickNativeVideo() : document.querySelector('#video-input')?.click();
   if (action === 'pick-audio') return isNativeAndroid ? pickNativeAudio() : document.querySelector('#audio-input')?.click();
@@ -314,6 +296,7 @@ async function handleAction(action) {
   if (action === 'render') { state.step = 4; return renderVideo(); }
   if (action === 'cancel-render') return cancelRender();
 }
+
 async function pickNativeVideo() {
   try {
     const picked = await NativeRender.pickVideo();
@@ -334,6 +317,17 @@ async function pickNativeAudio() {
   } catch (error) { if (!String(error?.message || error).toLowerCase().includes('cancel')) setToast(error?.message || 'Audio ရွေးမရပါ။'); }
 }
 
+async function pickNativeLogo() {
+  try {
+    const picked = await NativeRender.pickLogo();
+    if (state.logoUrl) URL.revokeObjectURL(state.logoUrl);
+    state.logoNativePath = picked.path;
+    state.logoFile = { name: picked.name, type: picked.mimeType || 'image/png' };
+    state.logoUrl = Capacitor.convertFileSrc(picked.path);
+    render();
+  } catch (error) { if (!String(error?.message || error).includes('ပယ်ဖျက်')) setToast(error?.message || 'Logo ကို ဖတ်မရပါ။'); }
+}
+
 function loadVideo(file) {
   if (!file) return;
   if (!file.type.startsWith('video/')) return setToast('Video file ပဲ ရွေးပေးပါ။');
@@ -347,7 +341,6 @@ function loadVideo(file) {
   const video = document.querySelector('#source-video');
   if (video) video.addEventListener('loadedmetadata', () => { state.metadata.duration = video.duration; }, { once: true });
 }
-
 
 function loadAudio(file) {
   if (!file) return;
@@ -372,7 +365,6 @@ function loadDemo() {
   setToast('Sample preview ကို ဖွင့်ထားပါတယ်။ Final render အတွက် ကိုယ့် video file ကို upload လုပ်ပါ။');
 }
 
-
 let lastTermuxRenderLog = { stage: '', pct: -1, at: 0 };
 function sendTermuxRenderLog(stage, pct, extra = {}) {
   const now = Date.now();
@@ -382,25 +374,22 @@ function sendTermuxRenderLog(stage, pct, extra = {}) {
   fetch('/api/render-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'progress', stage: stage || state.renderStage, progress: rounded ?? Math.round(state.renderProgress), resolution: state.resolution, time: new Date().toISOString(), ...extra }) }).catch(() => {});
 }
 
-function setRenderUI(stage, pct) {
+function setRenderUI(stage, pct, elapsed = null, remaining = null) {
   if (stage) state.renderStage = stage;
   if (pct != null) state.renderProgress = Math.max(state.renderProgress, pct);
+  if (elapsed) state.elapsedTime = elapsed;
+  if (remaining) state.remainingTime = remaining;
+  
   setText('#render-stage', state.renderStage);
   setText('#render-pct', `${Math.round(state.renderProgress)}%`);
   const bar = document.querySelector('#render-bar');
   if (bar) bar.style.width = `${state.renderProgress}%`;
-  if (state.renderStatus === 'working') sendTermuxRenderLog(stage, pct);
-}
+  
+  // ✅ အချိန်နဲ့ ခန့်မှန်းချိန်ကို Update လုပ်မယ်
+  const timeEl = document.querySelector('.render-time-info');
+  if (timeEl) timeEl.innerHTML = `⏱️ ကြာချိန်: ${state.elapsedTime} | ⏳ ခန့်မှန်း: ${state.remainingTime}`;
 
-async function pickNativeLogo() {
-  try {
-    const picked = await NativeRender.pickLogo();
-    if (state.logoUrl) URL.revokeObjectURL(state.logoUrl);
-    state.logoNativePath = picked.path;
-    state.logoFile = { name: picked.name, type: picked.mimeType || 'image/png' };
-    state.logoUrl = Capacitor.convertFileSrc(picked.path);
-    render();
-  } catch (error) { if (!String(error?.message || error).includes('ပယ်ဖျက်')) setToast(error?.message || 'Logo ကို ဖတ်မရပါ။'); }
+  if (state.renderStatus === 'working') sendTermuxRenderLog(stage, pct);
 }
 
 async function renderVideo() {
@@ -408,9 +397,17 @@ async function renderVideo() {
   state.renderStatus = 'working'; state.renderProgress = 2; state.renderStage = 'ပြင်ဆင်နေပါတယ်…'; state.renderError = ''; if (state.outputUrl) { URL.revokeObjectURL(state.outputUrl); state.outputUrl = ''; } render();
   try {
     if (isNativeAndroid) {
-      const listener = await NativeRender.addListener('renderProgress', (event) => setRenderUI(event.stage, event.progress));
+      // ✅ Native ကနေ ပို့လိုက်တဲ့ အချိန်၊ ခန့်မှန်းချိန်တွေကို ဖမ်းယူမယ်
+      const listener = await NativeRender.addListener('renderProgress', (event) => setRenderUI(event.stage, event.progress, event.elapsed, event.remaining));
       try {
-        const result = await NativeRender.render({ videoPath: state.file.nativePath, audioPath: state.audioFile?.nativePath || null, style: state.style, resolution: state.resolution, logoPath: state.logoNativePath || null });
+        const result = await NativeRender.render({ 
+            videoPath: state.file.nativePath, 
+            audioPath: state.audioFile?.nativePath || null, 
+            style: state.style, 
+            resolution: state.resolution, 
+            landscape: state.isLandscape, // ✅ 16:9 ဟုတ်မဟုတ် ပို့မယ်
+            logoPath: state.logoNativePath || null 
+        });
         state.outputUrl = Capacitor.convertFileSrc(result.previewPath); state.renderProgress = 100; state.renderStatus = 'complete'; state.renderStage = 'ပြီးပါပြီ — Movies/SiGyi Recap Studio ထဲ သိမ်းပြီးပါပြီ'; state.nativeSavedUri = result.savedUri;
       } finally { await listener.remove(); }
     } else {
@@ -420,6 +417,7 @@ async function renderVideo() {
     render();
   } catch (error) { if (state.renderStatus === 'cancelled') return; state.renderStatus = 'error'; const detail = error?.message || String(error); state.renderError = `${detail}\n\nဒီအမှားစာသားကို Copy လုပ်ပြီး ပို့ပေးပါ။`; console.error('[SiGyi Render Diagnostic]', { at: new Date().toISOString(), stage: state.renderStage, progress: state.renderProgress, error: detail, userAgent: navigator.userAgent, ffmpegLogs: getRenderLogs() }, error); try { await fetch('/api/render-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: detail, stage: state.renderStage, progress: state.renderProgress }) }); } catch {} terminateFfmpeg(); render(); }
 }
+
 function cancelRender() {
   if (isNativeAndroid) NativeRender.cancel().catch(() => {});
   terminateFfmpeg();
@@ -453,6 +451,7 @@ function resetStudio() {
   state.logoNativePath = null;
   state.logoPosition = 'top-right';
   state.captionsOn = false;
+  state.isLandscape = false; // ✅ Reset လုပ်ရင် 9:16 ပြန်ဖြစ်မယ်
   state.style = { blurEnabled: false, blurX: 8, blurY: 72, blurW: 84, blurH: 12, blurStrength: 18, logoSize: 16, titleText: '', titleX: 8, titleY: 12, titleSize: 34, titleColor: '#ffffff', flip: false, zoom: 1.02, fitMode: 'fit', brightness: 2, contrast: 5, saturation: 7, crop: 'center', frameColor: '#d6ef47', frameWidth: 0, filter: 'cinematic' };
   render();
 }
