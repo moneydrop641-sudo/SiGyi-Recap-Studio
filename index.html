@@ -1,17 +1,79 @@
-<!doctype html>
-<html lang="my">
-  <head>
+<!DOCTYPE html>
+<html lang="en">
+<head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#101311" />
-    <meta name="description" content="Si Gyi Recap Studio — Browser ထဲမှာပဲ Burmese video recap ဖန်တီးပါ။" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Myanmar:wght@400;500;700&display=swap" />
-    <title>Si Gyi Recap Studio</title>
-  </head>
-  <body>
-    <div id="app"></div>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>SiGyi Recap Studio</title>
+    <!-- သင့် CSS ဖိုင်တွေ ဒီမှာ ချိတ်ပါ -->
+</head>
+<body>
+    <!-- ========================================== -->
+    <!-- ဒီအပိုင်းက သင့် App ရဲ့ ရှိပြီးသား UI ဖြစ်ပါတယ် -->
+    <!-- ========================================== -->
+    <div id="app">
+        <h1>SiGyi Recap Studio</h1>
+        
+        <!-- ဥပမာ- ဖိုင်ရွေးတဲ့ ခလုတ်တွေ -->
+        <button id="pick-video-btn">Video ရွေးမည်</button>
+        <button id="pick-audio-btn">Audio ရွေးမည်</button>
+        <button id="pick-tts-btn">TTS ဖိုင်ရွေးမည်</button>
+        <button id="pick-logo-btn">Logo ရွေးမည်</button>
+        
+        <br><br>
+        
+        <!-- 16:9 နဲ့ 9:16 ရွေးတဲ့ နေရာ -->
+        <label>
+            <input type="radio" name="ratio" value="9:16" checked> 9:16 (ဒေါင်လိုက်)
+        </label>
+        <label>
+            <input type="radio" name="ratio" value="16:9"> 16:9 (အလျားလိုက်)
+        </label>
+        
+        <br><br>
+        
+        <!-- Render စတင်တဲ့ ခလုတ် -->
+        <button id="start-render-btn" style="background: green; color: white; padding: 10px 20px;">
+            🎬 Render စတင်မည်
+        </button>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- ✅ ဒီအပိုင်းက Render လုပ်နေစဉ် ပြသရန် အသစ်ထည့်တာ -->
+    <!-- ========================================== -->
+    <div id="render-status" style="display: none; padding: 20px; text-align: center; background: #f9f9f9; border-radius: 10px; margin-top: 20px;">
+        <h3 id="status-text">Render စတင်နေပါတယ်...</h3>
+        
+        <!-- Progress Bar -->
+        <div style="width: 100%; background: #ddd; border-radius: 5px; margin: 15px 0; height: 25px;">
+            <div id="progress-bar" style="width: 0%; height: 25px; background: #4CAF50; border-radius: 5px; transition: width 0.3s; text-align: center; color: white; line-height: 25px;">
+                0%
+            </div>
+        </div>
+
+        <!-- အချိန်နဲ့ ခန့်မှန်းချိန် -->
+        <p style="font-size: 16px; margin: 5px 0;">⏱️ <span id="elapsed-text">ကြာချိန်: 00:00</span></p>
+        <p style="font-size: 16px; margin: 5px 0;">⏳ <span id="remaining-text">ခန့်မှန်း: 00:00</span></p>
+        
+        <!-- ပယ်ဖျက်တဲ့ ခလုတ် -->
+        <button id="cancel-render-btn" style="background: red; color: white; padding: 8px 15px; margin-top: 10px;">
+            ❌ ပယ်ဖျက်မည်
+        </button>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- ✅ ဒီအပိုင်းက Render ပြီးတဲ့အခါ Preview ကြည့်ရန် -->
+    <!-- ========================================== -->
+    <div id="preview-section" style="display: none; padding: 20px; text-align: center;">
+        <h3>Render ပြီးပါပြီ!</h3>
+        <!-- Video Preview -->
+        <video id="preview-video" controls style="width: 100%; max-width: 400px; border-radius: 10px;"></video>
+        <br><br>
+        <button id="download-video-btn" style="background: blue; color: white; padding: 10px 20px;">
+            📥 ဖုန်းထဲ သိမ်းမည်
+        </button>
+    </div>
+
+    <!-- JavaScript ဖိုင် ချိတ်ရန် -->
     <script type="module" src="/src/main.js"></script>
-  </body>
+</body>
 </html>
