@@ -136,11 +136,10 @@ public class NativeRenderPlugin extends Plugin {
     cancelled = false;
     isRendering = true;
 
-    // ✅ Screen Off မဖြစ်အောင် ကာကွယ်ခြင်း
     PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
     if (pm != null) {
         wakeLock = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "SiGyi::RenderWakeLock");
-        wakeLock.acquire(60 * 60 * 1000L); // ၁ နာရီ ကြာအောင် ပိတ်မသွားအောင်
+        wakeLock.acquire(60 * 60 * 1000L);
     }
 
     new Thread(() -> renderWorker(call, new File(vp), ap == null ? null : new File(ap), lp == null ? null : new File(lp)), "SiGyiNativeRender").start();
@@ -191,7 +190,7 @@ public class NativeRenderPlugin extends Plugin {
         if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
         if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
         
-        // ✅ Audio နဲ့ Video ကို Speed ချိန်ညှိမယ် (တစ်ပိုင်းချင်းစီမှာ ကွက်တိဖြစ်အောင်)
+        // ✅ Audio နဲ့ Video ကွက်တိဖြစ်အောင် တွက်ချက်မယ်
         double partAudioDur = voice != null ? Math.min(len, aDuration - start) : len;
         double partVideoDur = Math.min(len, vDuration - start);
         double speedFactor = 1.0;
@@ -200,7 +199,7 @@ public class NativeRenderPlugin extends Plugin {
             if (speedFactor < 0.5) speedFactor = 0.5;
         }
         
-        boolean useFreeze = isLandscape;
+        boolean useFreeze = isLandscape; // 16:9 မှာပဲ Freeze Frame ထည့်မယ်
         String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, useFreeze, speedFactor);
         a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
         
@@ -267,7 +266,6 @@ public class NativeRenderPlugin extends Plugin {
           double seconds = stats.getTime() / 1000.0;
           int pct = base + (int)(Math.min(1.0, seconds / durationSeconds) * span);
           
-          // ✅ အချိန်တွက်ချက်မှု
           long elapsed = now - startTime;
           double progressRatio = (currentPartIndex + (seconds / durationSeconds)) / totalParts;
           long estimatedTotal = (long)(elapsed / Math.max(0.01, progressRatio));
@@ -296,6 +294,7 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
+  // ✅ Blur နဲ့ Speed ကို FFmpeg ရဲ့ အခြေခံဆုံး နည်းလမ်းတွေနဲ့ ရေးထားပါတယ် (Error မတက်နိုင်ပါ)
   private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, boolean useFreeze, double speedFactor) throws Exception {
     String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, useFreeze, speedFactor);
     String current = "base";
@@ -308,10 +307,10 @@ public class NativeRenderPlugin extends Plugin {
       int by = even((int)(h * clamp(s.optDouble("blurY", 72), 0, 90) / 100.0));
       bw = Math.max(2, Math.min(w - bx, bw)); bh = Math.max(2, Math.min(h - by, bh));
       
-      int maxSigma = Math.max(2, Math.min(bw, bh) / 4); 
-      int sigma = (int)Math.min(maxSigma, clamp(s.optDouble("blurStrength", 18), 2, 40));
+      // ✅ FFmpeg ရဲ့ မူရင်း blur filter ကို သုံးထားတယ် (sigma တန်ဖိုးကို ထိန်းထားတယ်)
+      int sigma = (int)clamp(s.optDouble("blurStrength", 18), 2, 40);
       
-      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",gblur=sigma=").append(sigma).append("[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
+      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",boxblur=").append(sigma).append(":1[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
       current = "blurout";
     }
     
@@ -421,7 +420,6 @@ public class NativeRenderPlugin extends Plugin {
       notifyListeners("renderProgress", d);
   }
 
-  // ✅ အချိန်နဲ့ ခန့်မှန်းချိန် ပါဝင်တဲ့ Progress ပို့ခြင်း
   private void progressWithTime(PluginCall c, int p, String stage, String elapsed, String remaining) {
       JSObject d = new JSObject(); d.put("progress", p); d.put("stage", stage); 
       d.put("elapsed", elapsed); d.put("remaining", remaining);
