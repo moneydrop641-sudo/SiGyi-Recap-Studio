@@ -145,7 +145,6 @@ public class NativeRenderPlugin extends Plugin {
       double vDuration = probe(source);
       double aDuration = voice != null ? probe(voice) : vDuration;
       
-      // ✅ Audio ကို အဓိကထားပြီး Duration သတ်မှတ်မယ်
       double finalDuration = voice != null ? aDuration : vDuration;
 
       if (finalDuration <= 0) throw new Exception("Duration မဖတ်နိုင်ပါ။");
@@ -173,13 +172,7 @@ public class NativeRenderPlugin extends Plugin {
         
         List<String> a = new ArrayList<>(Arrays.asList("-y"));
         
-        // ✅ Video Speed ကို ချိန်ညှိမယ် (Audio နဲ့ ကိုက်ညီအောင်)
-        double speedFactor = 1.0;
-        if (voice != null && vDuration < aDuration) {
-            speedFactor = vDuration / aDuration;
-            if (speedFactor < 0.5) speedFactor = 0.5; // သိပ်မနှေးသွားအောင် ကန့်သတ်
-        }
-
+        // ✅ Video ကို အပိုင်းခွဲပြီး Audio ကို သက်ဆိုင်ရာအချိန်မှာ ဖြတ်ယူမယ်
         a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
         if (voice != null) a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
         
@@ -187,8 +180,9 @@ public class NativeRenderPlugin extends Plugin {
         if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
         if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
         
-        // ✅ ဒီနေရာမှာ Filter Chain ကို အပြည့်အစုံ ပြန်ပေးလိုက်ပါပြီ (Error မတက်တော့ပါ)
-        String filterComplex = buildFilterGraph(style, w, h, fps, len, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor);
+        // ✅ 16:9 မှာပဲ Freeze Frame ထည့်မယ်
+        boolean useFreeze = isLandscape;
+        String filterComplex = buildFilterGraph(style, w, h, fps, len, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, useFreeze, vDuration);
         a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
         
         if (voice != null) {
@@ -271,9 +265,9 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor) throws Exception {
-    // ✅ Speed ကို Filter ထဲမှာတင် ထည့်ပေးလိုက်တဲ့အတွက် ရုပ်နဲ့အသံ ကွက်တိဖြစ်သွားပါပြီ
-    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, speedFactor);
+  // ✅ Blur နဲ့ Adjust ကို built-in filter တွေဖြစ်တဲ့ gblur နဲ့ lutrgb ကို ပြောင်းသုံးထားပါတယ်
+  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, boolean useFreeze, double totalVideoDuration) throws Exception {
+    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, useFreeze, totalVideoDuration);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     
@@ -287,7 +281,8 @@ public class NativeRenderPlugin extends Plugin {
       int maxSigma = Math.max(2, Math.min(bw, bh) / 4); 
       int sigma = (int)Math.min(maxSigma, clamp(s.optDouble("blurStrength", 18), 2, 40));
       
-      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",boxblur=luma_radius=").append(sigma).append(":luma_power=1[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
+      // ✅ boxblur အစား gblur ကို သုံးထားတယ် (Error မတက်ပါ)
+      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",gblur=sigma=").append(sigma).append("[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
       current = "blurout";
     }
     
@@ -340,7 +335,7 @@ public class NativeRenderPlugin extends Plugin {
   private int even(int n) { return Math.max(2, n & ~1); }
   private double clamp(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
 
-  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, double speedFactor) {
+  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, boolean useFreeze, double totalVideoDuration) {
     String base;
     if ("fit".equals(s.optString("fitMode", "fit"))) {
         base = "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease,pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2:color=black";
@@ -354,26 +349,29 @@ public class NativeRenderPlugin extends Plugin {
     double zoom = Math.max(1, Math.min(1.12, s.optDouble("zoom", 1.02)));
     if (zoom > 1.001) base += ",crop=w='iw/" + zoom + "':h='ih/" + zoom + "':x='(iw-ow)/2':y='(ih-oh)/2',scale=" + w + ":" + h;
     
-    // ✅ Speed Adjust (setpts) ကို ဒီနေရာမှာ ထည့်လိုက်တဲ့အတွက် ရုပ်က အသံနဲ့ ကွက်တိဖြစ်သွားပါပြီ
-    if (speedFactor < 1.0) {
-        base += ",setpts=" + String.format(Locale.US, "%.4f", 1.0/speedFactor) + "*PTS";
+    // ✅ 16:9 မှာပဲ Freeze Frame ထည့်မယ်
+    if (useFreeze) {
+        base += ",tpad=stop_mode=clone:stop_duration=10";
     }
 
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
-    double br = s.optDouble("brightness", 0) / 200.0, ct = 1 + s.optDouble("contrast", 0) / 100.0, sat = 1 + s.optDouble("saturation", 0) / 100.0; 
-    String preset = s.optString("filter", "cinematic");
-    if ("mono".equals(preset)) sat = 0; 
-    if ("cinematic".equals(preset)) { ct *= 1.035; sat *= .96; } 
-    if ("vivid".equals(preset)) { ct *= 1.05; sat *= 1.16; }
+    // ✅ colorlevels အစား lutrgb ကို သုံးထားတယ် (Error မတက်ပါ)
+    double br = s.optDouble("brightness", 0);
+    double ct = s.optDouble("contrast", 0);
+    double sat = s.optDouble("saturation", 0);
+    
+    int brOffset = (int)(br * 2.55);
+    double ctFactor = 1.0 + (ct / 100.0);
+    double satFactor = 1.0 + (sat / 100.0);
 
-    double inMin = Math.max(0.0, 0.5 - (ct / 2.0) + br);
-    double inMax = Math.min(1.0, 0.5 + (ct / 2.0) + br);
-    double inSat = Math.max(0.0, Math.min(1.0, sat)); 
-
-    base += String.format(Locale.US, ",colorlevels=rimin=%.3f:gimin=%.3f:bimin=%.3f:rimax=%.3f:gimax=%.3f:bimax=%.3f", inMin, inMin, inMin, inMax, inMax, inMax);
-    if (inSat != 1.0) base += String.format(Locale.US, ",hue=s=%.3f", inSat);
+    if (brOffset != 0 || ctFactor != 1.0) {
+        base += String.format(Locale.US, ",lutrgb=r='clip((val-128)*%.3f+128+%d,0,255)':g='clip((val-128)*%.3f+128+%d,0,255)':b='clip((val-128)*%.3f+128+%d,0,255)'", ctFactor, brOffset, ctFactor, brOffset, ctFactor, brOffset);
+    }
+    if (satFactor != 1.0) {
+        base += String.format(Locale.US, ",hue=s=%.3f", Math.max(0, Math.min(2, satFactor)));
+    }
     
     int border = Math.max(0, Math.min(18, s.optInt("frameWidth", 0)));
     if (border > 0) { 
@@ -427,3 +425,4 @@ public class NativeRenderPlugin extends Plugin {
   
   @PluginMethod public void cancel(PluginCall call) { cancelled = true; FFmpegKit.cancel(); call.resolve(); }
 }
+  
