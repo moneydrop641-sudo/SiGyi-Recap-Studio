@@ -1,14 +1,12 @@
 package com.sigyi.recapstudio;
 
 import android.content.ContentValues;
-import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.RectF;
-import android.os.PowerManager;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
@@ -35,7 +33,6 @@ public class NativeRenderPlugin extends Plugin {
   private volatile boolean cancelled = false;
   private volatile FFmpegSession activeSession;
   private volatile boolean isRendering = false;
-  private PowerManager.WakeLock wakeLock;
 
   @PluginMethod public void pickVideo(PluginCall call) { pick(call, "video/*", "video"); }
   @PluginMethod public void pickAudio(PluginCall call) { pick(call, "audio/*", "audio"); }
@@ -129,28 +126,22 @@ public class NativeRenderPlugin extends Plugin {
     if (isRendering) { call.reject("Render လုပ်ဆောင်နေဆဲဖြစ်ပါတယ်။"); return; }
     
     String vp = call.getString("videoPath"), ap = call.getString("audioPath"), lp = call.getString("logoPath");
+    Boolean isLandscape = call.getBoolean("landscape", false);
+    
     if (vp == null || !new File(vp).isFile()) { call.reject("Video ဖိုင်မတွေ့ပါ။"); return; }
     if (ap != null && !new File(ap).isFile()) { call.reject("Audio ဖိုင်မတွေ့ပါ။"); return; }
     if (lp != null && !new File(lp).isFile()) { call.reject("Logo ဖိုင်မတွေ့ပါ။"); return; }
     
     cancelled = false;
     isRendering = true;
-
-    PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-    if (pm != null) {
-        wakeLock = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "SiGyi::RenderWakeLock");
-        wakeLock.acquire(60 * 60 * 1000L);
-    }
-
-    new Thread(() -> renderWorker(call, new File(vp), ap == null ? null : new File(ap), lp == null ? null : new File(lp)), "SiGyiNativeRender").start();
+    new Thread(() -> renderWorker(call, new File(vp), ap == null ? null : new File(ap), lp == null ? null : new File(lp), isLandscape), "SiGyiNativeRender").start();
   }
 
-  private void renderWorker(PluginCall call, File source, File voice, File logo) {
+  private void renderWorker(PluginCall call, File source, File voice, File logo, boolean isLandscape) {
     File work = new File(getContext().getCacheDir(), "sigyi_job_" + System.currentTimeMillis());
-    if (!work.mkdirs()) { isRendering = false; releaseWakeLock(); call.reject("Cache folder မဖန်တီးနိုင်ပါ။"); return; }
+    if (!work.mkdirs()) { isRendering = false; call.reject("Cache folder မဖန်တီးနိုင်ပါ။"); return; }
     
     int currentPart = 1;
-    long startTime = System.currentTimeMillis();
     
     try {
       double vDuration = probe(source);
@@ -160,7 +151,6 @@ public class NativeRenderPlugin extends Plugin {
       if (finalDuration <= 0) throw new Exception("Duration မဖတ်နိုင်ပါ။");
 
       String res = call.getString("resolution", "720p");
-      boolean isLandscape = call.getBoolean("landscape", false);
       int w, h, fps = 24, crf = 28;
       if ("360p".equals(res)) { w = isLandscape ? 640 : 360; h = isLandscape ? 360 : 640; fps = 18; crf = 34; }
       else if ("1080p".equals(res)) { w = isLandscape ? 1920 : 1080; h = isLandscape ? 1080 : 1920; crf = 27; }
@@ -182,7 +172,6 @@ public class NativeRenderPlugin extends Plugin {
         
         List<String> a = new ArrayList<>(Arrays.asList("-y"));
         
-        // ✅ Video ကို ဖြတ်တောက်မယ်
         a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
         if (voice != null) a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
         
@@ -190,7 +179,6 @@ public class NativeRenderPlugin extends Plugin {
         if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
         if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
         
-        // ✅ Audio နဲ့ Video ကွက်တိဖြစ်အောင် တွက်ချက်မယ်
         double partAudioDur = voice != null ? Math.min(len, aDuration - start) : len;
         double partVideoDur = Math.min(len, vDuration - start);
         double speedFactor = 1.0;
@@ -199,8 +187,7 @@ public class NativeRenderPlugin extends Plugin {
             if (speedFactor < 0.5) speedFactor = 0.5;
         }
         
-        boolean useFreeze = isLandscape; // 16:9 မှာပဲ Freeze Frame ထည့်မယ်
-        String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, useFreeze, speedFactor);
+        String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor);
         a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
         
         if (voice != null) a.addAll(Arrays.asList("-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"));
@@ -208,7 +195,7 @@ public class NativeRenderPlugin extends Plugin {
         
         a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "4", "-pix_fmt", "yuv420p", "-movflags", "+faststart", part.getAbsolutePath()));
         
-        activeSession = executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), partAudioDur, "Part " + currentPart + "/" + count + " render လုပ်နေပါတယ်...", startTime, finalDuration, p, count);
+        activeSession = executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), partAudioDur, "Part " + currentPart + "/" + count + " render လုပ်နေပါတယ်...");
         
         if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) {
             String logs = activeSession != null ? activeSession.getAllLogsAsString() : null;
@@ -228,7 +215,7 @@ public class NativeRenderPlugin extends Plugin {
       File merged = new File(getContext().getCacheDir(), "sigyi_preview_final.mp4"); 
       if (merged.exists()) merged.delete();
       
-      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", list.getAbsolutePath(), "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 90, 6, finalDuration, "ပေါင်းနေပါတယ်...", startTime, finalDuration, count-1, count);
+      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", list.getAbsolutePath(), "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 90, 6, finalDuration, "ပေါင်းနေပါတယ်...");
       
       if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Merge မအောင်မြင်ပါ။");
       
@@ -243,18 +230,11 @@ public class NativeRenderPlugin extends Plugin {
     } catch (Throwable t) { 
       call.reject(t.getMessage() == null ? "Render မအောင်မြင်ပါ" : t.getMessage()); 
     } finally { 
-      deleteTree(work); activeSession = null; isRendering = false; releaseWakeLock();
+      deleteTree(work); activeSession = null; isRendering = false; 
     }
   }
 
-  private void releaseWakeLock() {
-    if (wakeLock != null && wakeLock.isHeld()) {
-        wakeLock.release();
-        wakeLock = null;
-    }
-  }
-
-  private FFmpegSession executeTracked(String[] args, PluginCall call, int base, int span, double durationSeconds, String stageText, long startTime, double totalDuration, int currentPartIndex, int totalParts) throws Exception {
+  private FFmpegSession executeTracked(String[] args, PluginCall call, int base, int span, double durationSeconds, String stageText) throws Exception {
     CountDownLatch done = new CountDownLatch(1); final FFmpegSession[] result = {null};
     final long[] lastNotify = {0};
     
@@ -265,16 +245,7 @@ public class NativeRenderPlugin extends Plugin {
           lastNotify[0] = now;
           double seconds = stats.getTime() / 1000.0;
           int pct = base + (int)(Math.min(1.0, seconds / durationSeconds) * span);
-          
-          long elapsed = now - startTime;
-          double progressRatio = (currentPartIndex + (seconds / durationSeconds)) / totalParts;
-          long estimatedTotal = (long)(elapsed / Math.max(0.01, progressRatio));
-          long remaining = Math.max(0, estimatedTotal - elapsed);
-          
-          String timeStr = String.format(Locale.US, "%02d:%02d", TimeUnit.MILLISECONDS.toMinutes(elapsed), TimeUnit.MILLISECONDS.toSeconds(elapsed) % 60);
-          String remStr = String.format(Locale.US, "%02d:%02d", TimeUnit.MILLISECONDS.toMinutes(remaining), TimeUnit.MILLISECONDS.toSeconds(remaining) % 60);
-
-          progressWithTime(call, Math.min(98, pct), stageText, timeStr, remStr);
+          progress(call, Math.min(98, pct), stageText);
         }
       }
     });
@@ -294,12 +265,13 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  // ✅ Blur နဲ့ Speed ကို FFmpeg ရဲ့ အခြေခံဆုံး နည်းလမ်းတွေနဲ့ ရေးထားပါတယ် (Error မတက်နိုင်ပါ)
-  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, boolean useFreeze, double speedFactor) throws Exception {
-    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, useFreeze, speedFactor);
+  // ✅ ဒီနေရာမှာ Blur အစား အနက်ရောင် Box ဆွဲအုပ်တဲ့ ကုဒ်ကို ထည့်ထားပါတယ်
+  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor) throws Exception {
+    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, speedFactor);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     
+    // ✅ Blur အစား Box ဆွဲအုပ်ခြင်း (Error မတက်နိုင်ပါ)
     if (s.optBoolean("blurEnabled", false)) {
       int bw = even((int)(w * clamp(s.optDouble("blurW", 84), 5, 100) / 100.0));
       int bh = even((int)(h * clamp(s.optDouble("blurH", 12), 3, 40) / 100.0));
@@ -307,11 +279,9 @@ public class NativeRenderPlugin extends Plugin {
       int by = even((int)(h * clamp(s.optDouble("blurY", 72), 0, 90) / 100.0));
       bw = Math.max(2, Math.min(w - bx, bw)); bh = Math.max(2, Math.min(h - by, bh));
       
-      // ✅ FFmpeg ရဲ့ မူရင်း blur filter ကို သုံးထားတယ် (sigma တန်ဖိုးကို ထိန်းထားတယ်)
-      int sigma = (int)clamp(s.optDouble("blurStrength", 18), 2, 40);
-      
-      g.append("[base]split=2[mainv][blursrc];[blursrc]crop=").append(bw).append(":").append(bh).append(":").append(bx).append(":").append(by).append(",boxblur=").append(sigma).append(":1[blurpatch];[mainv][blurpatch]overlay=").append(bx).append(":").append(by).append(":shortest=1[blurout];");
-      current = "blurout";
+      // အနက်ရောင် Box လေးတစ်ခု ဆွဲအုပ်လိုက်တာပါ
+      g.append("[base]drawbox=x=").append(bx).append(":y=").append(by).append(":w=").append(bw).append(":h=").append(bh).append(":color=black@1.0:t=fill[boxed];");
+      current = "boxed";
     }
     
     if (logo != null && logoInput >= 0) {
@@ -363,7 +333,7 @@ public class NativeRenderPlugin extends Plugin {
   private int even(int n) { return Math.max(2, n & ~1); }
   private double clamp(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
 
-  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, boolean useFreeze, double speedFactor) {
+  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, double speedFactor) {
     String base;
     if ("fit".equals(s.optString("fitMode", "fit"))) {
         base = "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease,pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2:color=black";
@@ -377,33 +347,25 @@ public class NativeRenderPlugin extends Plugin {
     double zoom = Math.max(1, Math.min(1.12, s.optDouble("zoom", 1.02)));
     if (zoom > 1.001) base += ",crop=w='iw/" + zoom + "':h='ih/" + zoom + "':x='(iw-ow)/2':y='(ih-oh)/2',scale=" + w + ":" + h;
     
-    // ✅ Speed Adjust (Audio နဲ့ Video ကို ကွက်တိဖြစ်အောင်)
     if (speedFactor < 1.0) {
         base += ",setpts=" + String.format(Locale.US, "%.4f", 1.0/speedFactor) + "*PTS";
-    }
-
-    // ✅ Freeze Frame (16:9 မှာပဲ ထည့်မယ်)
-    if (useFreeze) {
-        base += ",tpad=stop_mode=clone:stop_duration=10";
     }
 
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
-    double br = s.optDouble("brightness", 0);
-    double ct = s.optDouble("contrast", 0);
-    double sat = s.optDouble("saturation", 0);
-    
-    int brOffset = (int)(br * 2.55);
-    double ctFactor = 1.0 + (ct / 100.0);
-    double satFactor = 1.0 + (sat / 100.0);
+    double br = s.optDouble("brightness", 0) / 200.0, ct = 1 + s.optDouble("contrast", 0) / 100.0, sat = 1 + s.optDouble("saturation", 0) / 100.0; 
+    String preset = s.optString("filter", "cinematic");
+    if ("mono".equals(preset)) sat = 0; 
+    if ("cinematic".equals(preset)) { ct *= 1.035; sat *= .96; } 
+    if ("vivid".equals(preset)) { ct *= 1.05; sat *= 1.16; }
 
-    if (brOffset != 0 || ctFactor != 1.0) {
-        base += String.format(Locale.US, ",lutrgb=r='clip((val-128)*%.3f+128+%d,0,255)':g='clip((val-128)*%.3f+128+%d,0,255)':b='clip((val-128)*%.3f+128+%d,0,255)'", ctFactor, brOffset, ctFactor, brOffset, ctFactor, brOffset);
-    }
-    if (satFactor != 1.0) {
-        base += String.format(Locale.US, ",hue=s=%.3f", Math.max(0, Math.min(2, satFactor)));
-    }
+    double inMin = Math.max(0.0, 0.5 - (ct / 2.0) + br);
+    double inMax = Math.min(1.0, 0.5 + (ct / 2.0) + br);
+    double inSat = Math.max(0.0, Math.min(1.0, sat)); 
+
+    base += String.format(Locale.US, ",colorlevels=rimin=%.3f:gimin=%.3f:bimin=%.3f:rimax=%.3f:gimax=%.3f:bimax=%.3f", inMin, inMin, inMin, inMax, inMax, inMax);
+    if (inSat != 1.0) base += String.format(Locale.US, ",hue=s=%.3f", inSat);
     
     int border = Math.max(0, Math.min(18, s.optInt("frameWidth", 0)));
     if (border > 0) { 
@@ -417,12 +379,6 @@ public class NativeRenderPlugin extends Plugin {
   
   private void progress(PluginCall c, int p, String stage) {
       JSObject d = new JSObject(); d.put("progress", p); d.put("stage", stage); 
-      notifyListeners("renderProgress", d);
-  }
-
-  private void progressWithTime(PluginCall c, int p, String stage, String elapsed, String remaining) {
-      JSObject d = new JSObject(); d.put("progress", p); d.put("stage", stage); 
-      d.put("elapsed", elapsed); d.put("remaining", remaining);
       notifyListeners("renderProgress", d);
   }
 
