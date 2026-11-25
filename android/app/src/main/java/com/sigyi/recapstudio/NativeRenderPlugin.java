@@ -153,7 +153,7 @@ public class NativeRenderPlugin extends Plugin {
       if (finalDuration <= 0) throw new Exception("Duration မဖတ်နိုင်ပါ။");
 
       String res = call.getString("resolution", "720p");
-      int w, h, fps = 30, crf = 28;
+      int w, h, fps = 30, crf = 28; // FPS ကို 30 ပြောင်းထားတယ်
       if ("360p".equals(res)) { w = isLandscape ? 640 : 360; h = isLandscape ? 360 : 640; fps = 18; crf = 34; }
       else if ("1080p".equals(res)) { w = isLandscape ? 1920 : 1080; h = isLandscape ? 1080 : 1920; crf = 27; }
       else { w = isLandscape ? 1280 : 720; h = isLandscape ? 720 : 1280; }
@@ -199,10 +199,11 @@ public class NativeRenderPlugin extends Plugin {
                 if (speedFactor < 0.5) speedFactor = 0.5;
             }
             
-            String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, c, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor);
+            // ✅ Filter Chain တွင် Audio နှင့် Video ကို ပေါင်းစပ်ထားသည်
+            String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, c, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor, voice != null);
             a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
             
-            if (voice != null) a.addAll(Arrays.asList("-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"));
+            if (voice != null) a.addAll(Arrays.asList("-map", "[aout]", "-c:a", "aac", "-b:a", "128k"));
             else a.addAll(Arrays.asList("-map", "0:a?"));
             
             a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "4", "-pix_fmt", "yuv420p", "-movflags", "+faststart", chunkFile.getAbsolutePath()));
@@ -219,13 +220,13 @@ public class NativeRenderPlugin extends Plugin {
             chunkFiles.add(chunkFile);
         }
         
-        // ✅ Chunk 4 ခုကို Part တစ်ခုအဖြစ် ပြန်ပေါင်းမယ်
+        // ✅ Chunk 4 ခုကို Part တစ်ခုအဖြစ် ပြန်ပေါင်းမယ် (Timestamp မှန်စေရန် -fflags +genpts သုံးမယ်)
         File partFile = new File(work, String.format(Locale.US, "part_%03d.mp4", p + 1));
         File chunkList = new File(work, String.format(Locale.US, "chunks_%03d.txt", p + 1));
         try (FileOutputStream out = new FileOutputStream(chunkList)) {
             for (File f : chunkFiles) out.write(("file '" + f.getAbsolutePath() + "'\n").getBytes("UTF-8"));
         }
-        activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", chunkList.getAbsolutePath(), "-c", "copy", partFile.getAbsolutePath()}, call, 88, 2, partLen, "Part " + (p+1) + " ပေါင်းနေပါတယ်...", startTime, finalDuration, p, totalPartsCount);
+        activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", chunkList.getAbsolutePath(), "-fflags", "+genpts", "-c", "copy", partFile.getAbsolutePath()}, call, 88, 2, partLen, "Part " + (p+1) + " ပေါင်းနေပါတယ်...", startTime, finalDuration, p, totalPartsCount);
         if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Part ပေါင်းမရပါ။");
         
         for (File f : chunkFiles) f.delete();
@@ -233,7 +234,7 @@ public class NativeRenderPlugin extends Plugin {
         allParts.add(partFile);
       }
       
-      // ✅ အားလုံးကို ပေါင်းပြီး နောက်ဆုံး ဗီဒီယို ထုတ်မယ်
+      // ✅ အားလုံးကို ပေါင်းပြီး နောက်ဆုံး ဗီဒီယို ထုတ်မယ် (Timestamp မှန်စေရန် -fflags +genpts သုံးမယ်)
       progress(call, 92, "အားလုံးကို ပေါင်းနေပါတယ်...");
       File finalList = new File(work, "all_parts.txt");
       try (FileOutputStream out = new FileOutputStream(finalList)) {
@@ -242,7 +243,7 @@ public class NativeRenderPlugin extends Plugin {
       File merged = new File(getContext().getCacheDir(), "sigyi_preview_final.mp4");
       if (merged.exists()) merged.delete();
       
-      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", finalList.getAbsolutePath(), "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 90, 6, finalDuration, "ပေါင်းနေပါတယ်...", startTime, finalDuration, totalPartsCount-1, totalPartsCount);
+      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", finalList.getAbsolutePath(), "-fflags", "+genpts", "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 90, 6, finalDuration, "ပေါင်းနေပါတယ်...", startTime, finalDuration, totalPartsCount-1, totalPartsCount);
       
       if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Merge မအောင်မြင်ပါ။");
       
@@ -301,7 +302,8 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor) throws Exception {
+  // ✅ Audio Sync ပါဝင်သော buildFilterGraph
+  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor, boolean hasAudio) throws Exception {
     String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, speedFactor);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
@@ -332,6 +334,16 @@ public class NativeRenderPlugin extends Plugin {
       int ty = (int)((h - titleH) * clamp(s.optDouble("titleY", 12), 0, 100) / 100.0);
       g.append("[").append(titleInput).append(":v]format=rgba[titleimg];[").append(current).append("][titleimg]overlay=x=").append(tx).append(":y=").append(ty).append(":eof_action=pass:repeatlast=1[titleout];");
       current = "titleout";
+    }
+    
+    // ✅ Audio ကို ဗီဒီယိုနဲ့ ကွက်တိဖြစ်အောင် Filter Chain ထဲမှာ ထည့်မယ်
+    if (hasAudio) {
+        // aresample (Sync), atempo (Speed), loudnorm (Volume)
+        g.append("[1:a]aresample=async=1000:first_pts=0");
+        if (speedFactor < 1.0) {
+            g.append(",atempo=").append(String.format(Locale.US, "%.4f", speedFactor));
+        }
+        g.append("[aout]");
     }
     
     g.append("[").append(current).append("]null[vout]");
@@ -462,4 +474,4 @@ public class NativeRenderPlugin extends Plugin {
   }
   
   @PluginMethod public void cancel(PluginCall call) { cancelled = true; FFmpegKit.cancel(); call.resolve(); }
-}
+      }
