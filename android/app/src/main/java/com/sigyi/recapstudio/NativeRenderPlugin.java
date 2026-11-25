@@ -141,7 +141,9 @@ public class NativeRenderPlugin extends Plugin {
     File work = new File(getContext().getCacheDir(), "sigyi_job_" + System.currentTimeMillis());
     if (!work.mkdirs()) { isRendering = false; call.reject("Cache folder မဖန်တီးနိုင်ပါ။"); return; }
     
-    int currentPart = 1;
+    int totalParts = 0;
+    int currentGlobalPart = 1;
+    long startTime = System.currentTimeMillis();
     
     try {
       double vDuration = probe(source);
@@ -151,7 +153,7 @@ public class NativeRenderPlugin extends Plugin {
       if (finalDuration <= 0) throw new Exception("Duration မဖတ်နိုင်ပါ။");
 
       String res = call.getString("resolution", "720p");
-      int w, h, fps = 24, crf = 28;
+      int w, h, fps = 30, crf = 28;
       if ("360p".equals(res)) { w = isLandscape ? 640 : 360; h = isLandscape ? 360 : 640; fps = 18; crf = 34; }
       else if ("1080p".equals(res)) { w = isLandscape ? 1920 : 1080; h = isLandscape ? 1080 : 1920; crf = 27; }
       else { w = isLandscape ? 1280 : 720; h = isLandscape ? 720 : 1280; }
@@ -160,66 +162,91 @@ public class NativeRenderPlugin extends Plugin {
       File titleOverlay = null; String titleText = style.optString("titleText", "");
       if (!titleText.trim().isEmpty()) titleOverlay = createTitleOverlay(work, titleText, style, w, h);
       
-      int chunkSeconds = 300; int count = (int)Math.ceil(finalDuration / chunkSeconds);
-      List<File> parts = new ArrayList<>();
+      // ✅ စုစုပေါင်း Part အရေအတွက်ကို 1 မိနစ်နဲ့ တွက်မယ်
+      int partSeconds = 60; 
+      int totalPartsCount = (int)Math.ceil(finalDuration / partSeconds);
       
-      for (int p = 0; p < count; p++) {
-        currentPart = p + 1;
-        if (cancelled) throw new Exception("Render ကို ပယ်ဖျက်လိုက်ပါပြီ။");
+      List<File> allParts = new ArrayList<>();
+      
+      for (int p = 0; p < totalPartsCount; p++) {
+        double partStart = p * partSeconds;
+        double partLen = Math.min(partSeconds, finalDuration - partStart);
         
-        double start = p * chunkSeconds, len = Math.min(chunkSeconds, finalDuration - start); 
-        File part = new File(work, String.format(Locale.US, "part_%03d.mp4", p + 1));
+        // ✅ Part တစ်ခုကို 4 chunk ခွဲမယ် (15 စက္ကန့်စီ)
+        int chunkCount = 4;
+        double chunkLen = partLen / chunkCount;
+        List<File> chunkFiles = new ArrayList<>();
         
-        List<String> a = new ArrayList<>(Arrays.asList("-y"));
-        
-        a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", source.getAbsolutePath()));
-        if (voice != null) a.addAll(Arrays.asList("-ss", fmt(start), "-t", fmt(len), "-i", voice.getAbsolutePath()));
-        
-        int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
-        if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
-        if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
-        
-        double partAudioDur = voice != null ? Math.min(len, aDuration - start) : len;
-        double partVideoDur = Math.min(len, vDuration - start);
-        double speedFactor = 1.0;
-        if (voice != null && partVideoDur < partAudioDur && partVideoDur > 0) {
-            speedFactor = partVideoDur / partAudioDur;
-            if (speedFactor < 0.5) speedFactor = 0.5;
+        for (int c = 0; c < chunkCount; c++) {
+            if (cancelled) throw new Exception("Render ကို ပယ်ဖျက်လိုက်ပါပြီ။");
+            
+            double chunkStart = partStart + (c * chunkLen);
+            File chunkFile = new File(work, String.format(Locale.US, "p%d_c%d.mp4", p + 1, c + 1));
+            
+            List<String> a = new ArrayList<>(Arrays.asList("-y"));
+            a.addAll(Arrays.asList("-ss", fmt(chunkStart), "-t", fmt(chunkLen), "-i", source.getAbsolutePath()));
+            if (voice != null) a.addAll(Arrays.asList("-ss", fmt(chunkStart), "-t", fmt(chunkLen), "-i", voice.getAbsolutePath()));
+            
+            int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
+            if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
+            if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
+            
+            double partAudioDur = voice != null ? Math.min(chunkLen, aDuration - chunkStart) : chunkLen;
+            double partVideoDur = Math.min(chunkLen, vDuration - chunkStart);
+            double speedFactor = 1.0;
+            if (voice != null && partVideoDur < partAudioDur && partVideoDur > 0) {
+                speedFactor = partVideoDur / partAudioDur;
+                if (speedFactor < 0.5) speedFactor = 0.5;
+            }
+            
+            String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, c, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor);
+            a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
+            
+            if (voice != null) a.addAll(Arrays.asList("-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"));
+            else a.addAll(Arrays.asList("-map", "0:a?"));
+            
+            a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "4", "-pix_fmt", "yuv420p", "-movflags", "+faststart", chunkFile.getAbsolutePath()));
+            
+            int progressBase = 10 + (int)(((p * chunkCount + c) / (double)(totalPartsCount * chunkCount)) * 78);
+            int progressSpan = Math.max(1, (int)(78.0 / (totalPartsCount * chunkCount)));
+            
+            activeSession = executeTracked(a.toArray(new String[0]), call, progressBase, progressSpan, partAudioDur, "Part " + (p+1) + "/" + totalPartsCount + " (Chunk " + (c+1) + "/" + chunkCount + ") ...", startTime, finalDuration, p * chunkCount + c, totalPartsCount * chunkCount);
+            
+            if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) {
+                String logs = activeSession != null ? activeSession.getAllLogsAsString() : null;
+                throw new Exception("Chunk မအောင်မြင်ပါ။ \n" + (logs != null ? logs : ""));
+            }
+            chunkFiles.add(chunkFile);
         }
         
-        String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, p, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor);
-        a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
-        
-        if (voice != null) a.addAll(Arrays.asList("-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"));
-        else a.addAll(Arrays.asList("-map", "0:a?"));
-        
-        a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "4", "-pix_fmt", "yuv420p", "-movflags", "+faststart", part.getAbsolutePath()));
-        
-        activeSession = executeTracked(a.toArray(new String[0]), call, 10 + (int)((p/(double)count)*78), Math.max(1, (int)(78.0/count)), partAudioDur, "Part " + currentPart + "/" + count + " render လုပ်နေပါတယ်...");
-        
-        if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) {
-            String logs = activeSession != null ? activeSession.getAllLogsAsString() : null;
-            throw new Exception("Part " + currentPart + " မအောင်မြင်ပါ။ \n" + (logs != null ? logs : ""));
+        // ✅ Chunk 4 ခုကို Part တစ်ခုအဖြစ် ပြန်ပေါင်းမယ်
+        File partFile = new File(work, String.format(Locale.US, "part_%03d.mp4", p + 1));
+        File chunkList = new File(work, String.format(Locale.US, "chunks_%03d.txt", p + 1));
+        try (FileOutputStream out = new FileOutputStream(chunkList)) {
+            for (File f : chunkFiles) out.write(("file '" + f.getAbsolutePath() + "'\n").getBytes("UTF-8"));
         }
+        activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", chunkList.getAbsolutePath(), "-c", "copy", partFile.getAbsolutePath()}, call, 88, 2, partLen, "Part " + (p+1) + " ပေါင်းနေပါတယ်...", startTime, finalDuration, p, totalPartsCount);
+        if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Part ပေါင်းမရပါ။");
         
-        parts.add(part); 
-        progress(call, 10 + (int)(((p + 1.0)/count)*78), "Part " + currentPart + "/" + count + " ပြီးပါပြီ");
+        for (File f : chunkFiles) f.delete();
+        chunkList.delete();
+        allParts.add(partFile);
       }
       
-      progress(call, 92, "အားလုံးကို ပေါင်းနေပါတယ်..."); 
-      File list = new File(work, "parts.txt"); 
-      try (FileOutputStream out = new FileOutputStream(list)) { 
-          for (File f : parts) out.write(("file '" + f.getAbsolutePath() + "'\n").getBytes("UTF-8")); 
+      // ✅ အားလုံးကို ပေါင်းပြီး နောက်ဆုံး ဗီဒီယို ထုတ်မယ်
+      progress(call, 92, "အားလုံးကို ပေါင်းနေပါတယ်...");
+      File finalList = new File(work, "all_parts.txt");
+      try (FileOutputStream out = new FileOutputStream(finalList)) {
+          for (File f : allParts) out.write(("file '" + f.getAbsolutePath() + "'\n").getBytes("UTF-8"));
       }
-      
-      File merged = new File(getContext().getCacheDir(), "sigyi_preview_final.mp4"); 
+      File merged = new File(getContext().getCacheDir(), "sigyi_preview_final.mp4");
       if (merged.exists()) merged.delete();
       
-      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", list.getAbsolutePath(), "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 90, 6, finalDuration, "ပေါင်းနေပါတယ်...");
+      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", finalList.getAbsolutePath(), "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 90, 6, finalDuration, "ပေါင်းနေပါတယ်...", startTime, finalDuration, totalPartsCount-1, totalPartsCount);
       
       if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Merge မအောင်မြင်ပါ။");
       
-      for (File partFile : parts) partFile.delete(); list.delete();
+      for (File f : allParts) f.delete(); finalList.delete();
       progress(call, 96, "Movies folder ထဲ သိမ်းနေပါတယ်…"); 
       Uri saved = saveMovies(merged);
       
@@ -234,7 +261,7 @@ public class NativeRenderPlugin extends Plugin {
     }
   }
 
-  private FFmpegSession executeTracked(String[] args, PluginCall call, int base, int span, double durationSeconds, String stageText) throws Exception {
+  private FFmpegSession executeTracked(String[] args, PluginCall call, int base, int span, double durationSeconds, String stageText, long startTime, double totalDuration, int currentChunkIndex, int totalChunks) throws Exception {
     CountDownLatch done = new CountDownLatch(1); final FFmpegSession[] result = {null};
     final long[] lastNotify = {0};
     
@@ -245,7 +272,16 @@ public class NativeRenderPlugin extends Plugin {
           lastNotify[0] = now;
           double seconds = stats.getTime() / 1000.0;
           int pct = base + (int)(Math.min(1.0, seconds / durationSeconds) * span);
-          progress(call, Math.min(98, pct), stageText);
+          
+          long elapsed = now - startTime;
+          double progressRatio = (currentChunkIndex + (seconds / durationSeconds)) / totalChunks;
+          long estimatedTotal = (long)(elapsed / Math.max(0.01, progressRatio));
+          long remaining = Math.max(0, estimatedTotal - elapsed);
+          
+          String timeStr = String.format(Locale.US, "%02d မိနစ် %02d စက္ကန့်", TimeUnit.MILLISECONDS.toMinutes(elapsed), TimeUnit.MILLISECONDS.toSeconds(elapsed) % 60);
+          String remStr = String.format(Locale.US, "%02d မိနစ် %02d စက္ကန့်", TimeUnit.MILLISECONDS.toMinutes(remaining), TimeUnit.MILLISECONDS.toSeconds(remaining) % 60);
+
+          progressWithTime(call, Math.min(98, pct), stageText, timeStr, remStr);
         }
       }
     });
@@ -265,23 +301,21 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  // ✅ ဒီနေရာမှာ Blur အစား အနက်ရောင် Box ဆွဲအုပ်တဲ့ ကုဒ်ကို ထည့်ထားပါတယ်
   private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor) throws Exception {
     String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, speedFactor);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     
-    // ✅ Blur အစား Box ဆွဲအုပ်ခြင်း (Error မတက်နိုင်ပါ)
     if (s.optBoolean("blurEnabled", false)) {
-      int bw = even((int)(w * clamp(s.optDouble("blurW", 84), 5, 100) / 100.0));
-      int bh = even((int)(h * clamp(s.optDouble("blurH", 12), 3, 40) / 100.0));
-      int bx = even((int)(w * clamp(s.optDouble("blurX", 8), 0, 90) / 100.0));
-      int by = even((int)(h * clamp(s.optDouble("blurY", 72), 0, 90) / 100.0));
-      bw = Math.max(2, Math.min(w - bx, bw)); bh = Math.max(2, Math.min(h - by, bh));
-      
-      // အနက်ရောင် Box လေးတစ်ခု ဆွဲအုပ်လိုက်တာပါ
-      g.append("[base]drawbox=x=").append(bx).append(":y=").append(by).append(":w=").append(bw).append(":h=").append(bh).append(":color=black@1.0:t=fill[boxed];");
-      current = "boxed";
+        int bw = (int)(w * clamp(s.optDouble("blurW", 84), 5, 100) / 100.0);
+        int bh = (int)(h * clamp(s.optDouble("blurH", 12), 3, 40) / 100.0);
+        int bx = (int)(w * clamp(s.optDouble("blurX", 8), 0, 90) / 100.0);
+        int by = (int)(h * clamp(s.optDouble("blurY", 72), 0, 90) / 100.0);
+        
+        g.append("[base]drawbox=x=").append(bx).append(":y=").append(by)
+         .append(":w=").append(bw).append(":h=").append(bh)
+         .append(":color=black:t=fill[boxout];");
+        current = "boxout";
     }
     
     if (logo != null && logoInput >= 0) {
@@ -351,6 +385,10 @@ public class NativeRenderPlugin extends Plugin {
         base += ",setpts=" + String.format(Locale.US, "%.4f", 1.0/speedFactor) + "*PTS";
     }
 
+    if (isLandscape) {
+        base += ",tpad=stop_mode=clone:stop_duration=5";
+    }
+
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
@@ -379,6 +417,12 @@ public class NativeRenderPlugin extends Plugin {
   
   private void progress(PluginCall c, int p, String stage) {
       JSObject d = new JSObject(); d.put("progress", p); d.put("stage", stage); 
+      notifyListeners("renderProgress", d);
+  }
+
+  private void progressWithTime(PluginCall c, int p, String stage, String elapsed, String remaining) {
+      JSObject d = new JSObject(); d.put("progress", p); d.put("stage", stage); 
+      d.put("elapsed", elapsed); d.put("remaining", remaining);
       notifyListeners("renderProgress", d);
   }
 
