@@ -152,7 +152,7 @@ public class NativeRenderPlugin extends Plugin {
 
       String res = call.getString("resolution", "720p");
       int w, h, fps = 30;
-      if ("360p".equals(res)) { w = isLandscape ? 640 : 360; h = isLandscape ? 360 : 640; fps = 18; }
+      if ("360p".equals(res)) { w = isLandscape ? 640 : 360; h = isLandscape ? 360 : 640; fps = 30; }
       else if ("1080p".equals(res)) { w = isLandscape ? 1920 : 1080; h = isLandscape ? 1080 : 1920; }
       else { w = isLandscape ? 1280 : 720; h = isLandscape ? 720 : 1280; }
 
@@ -160,48 +160,112 @@ public class NativeRenderPlugin extends Plugin {
       File titleOverlay = null; String titleText = style.optString("titleText", "");
       if (!titleText.trim().isEmpty()) titleOverlay = createTitleOverlay(work, titleText, style, w, h);
       
-      List<String> a = new ArrayList<>(Arrays.asList("-y"));
-      
-      // ✅ Video နဲ့ Audio ကို တစ်ခါတည်း ဖတ်မယ် (Chunk မခွဲတော့ဘူး)
-      a.addAll(Arrays.asList("-i", source.getAbsolutePath()));
-      if (voice != null) a.addAll(Arrays.asList("-i", voice.getAbsolutePath()));
-      
-      int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
-      if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
-      if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
-      
-      // ✅ Speed Factor တွက်မယ် (Video က Audio ထက် တိုရင်)
-      double speedFactor = 1.0;
-      if (voice != null && vDuration < aDuration && vDuration > 0) {
-          speedFactor = vDuration / aDuration;
-          if (speedFactor < 0.5) speedFactor = 0.5;
-      }
-      
-      // ✅ Filter Chain ကို တစ်ခါတည်း တည်ဆောက်မယ်
-      String filterComplex = buildFilterGraph(style, w, h, fps, finalDuration, logoInput, logo, titleInput, titleOverlay, isLandscape, speedFactor, voice != null);
-      a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
-      
-      if (voice != null) {
-          a.addAll(Arrays.asList("-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000"));
-      } else {
-          a.addAll(Arrays.asList("-map", "0:a?"));
-      }
-      
-      // ✅ Output ကို တစ်ခါတည်း ထုတ်မယ်
-      File output = new File(work, "final.mp4");
-      a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "8", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.getAbsolutePath()));
-      
-      activeSession = executeTracked(a.toArray(new String[0]), call, 10, 85, finalDuration, "Render လုပ်နေပါတယ်...", startTime);
+      // ✅ အဆင့် (၁) - မူရင်း Video ကို 30fps နဲ့ 48kHz ပြောင်းမယ်
+      progress(call, 2, "ဗီဒီယိုကို 30fps/48kHz ပြောင်းနေပါတယ်...");
+      File fixedVideo = new File(work, "fixed_video.mp4");
+      activeSession = executeTracked(new String[]{
+          "-y", "-i", source.getAbsolutePath(),
+          "-vf", "fps=30",
+          "-c:v", "mpeg4", "-q:v", "5",
+          "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
+          fixedVideo.getAbsolutePath()
+      }, call, 2, 5, vDuration, "ဗီဒီယိုကို ပြောင်းနေပါတယ်...", startTime);
       
       if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) {
-          String logs = activeSession != null ? activeSession.getAllLogsAsString() : null;
-          throw new Exception("Render မအောင်မြင်ပါ။ \n" + (logs != null ? logs : ""));
+          throw new Exception("Video ပြောင်းလဲမှု မအောင်မြင်ပါ။");
       }
       
-      progress(call, 96, "Movies folder ထဲ သိမ်းနေပါတယ်…"); 
-      Uri saved = saveMovies(output);
+      // ✅ အဆင့် (၂) - 1 မိနစ် Part ခွဲပြီး 4 Chunk ခွဲမယ်
+      int partSeconds = 60; 
+      int totalPartsCount = (int)Math.ceil(finalDuration / partSeconds);
+      int chunkCountPerPart = 4;
+      int totalChunks = totalPartsCount * chunkCountPerPart;
       
-      JSObject result = new JSObject(); result.put("savedUri", saved.toString()); result.put("previewPath", output.getAbsolutePath()); result.put("name", "SiGyi_Recap.mp4"); result.put("size", output.length());
+      List<File> allParts = new ArrayList<>();
+      int globalChunkIndex = 0;
+      
+      for (int p = 0; p < totalPartsCount; p++) {
+        double partStart = p * partSeconds;
+        double partLen = Math.min(partSeconds, finalDuration - partStart);
+        double chunkLen = partLen / chunkCountPerPart;
+        List<File> chunkFiles = new ArrayList<>();
+        
+        for (int c = 0; c < chunkCountPerPart; c++) {
+            if (cancelled) throw new Exception("Render ကို ပယ်ဖျက်လိုက်ပါပြီ။");
+            
+            double chunkStart = partStart + (c * chunkLen);
+            File chunkFile = new File(work, String.format(Locale.US, "p%d_c%d.mp4", p + 1, c + 1));
+            
+            List<String> a = new ArrayList<>(Arrays.asList("-y"));
+            // ✅ 30fps ဖြစ်နေတဲ့ fixedVideo ကို သုံးမယ်
+            a.addAll(Arrays.asList("-ss", fmt(chunkStart), "-t", fmt(chunkLen), "-i", fixedVideo.getAbsolutePath()));
+            if (voice != null) a.addAll(Arrays.asList("-ss", fmt(chunkStart), "-t", fmt(chunkLen), "-i", voice.getAbsolutePath()));
+            
+            int nextInput = voice != null ? 2 : 1; int logoInput = -1, titleInput = -1;
+            if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
+            if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
+            
+            double partAudioDur = voice != null ? Math.min(chunkLen, aDuration - chunkStart) : chunkLen;
+            double partVideoDur = Math.min(chunkLen, vDuration - chunkStart);
+            double speedFactor = 1.0;
+            if (voice != null && partVideoDur < partAudioDur && partVideoDur > 0) {
+                speedFactor = partVideoDur / partAudioDur;
+                if (speedFactor < 0.5) speedFactor = 0.5;
+            }
+            
+            String filterComplex = buildFilterGraph(style, w, h, fps, partAudioDur, c, logoInput, logo, titleInput, titleOverlay, w, h, isLandscape, speedFactor, voice != null);
+            a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
+            
+            if (voice != null) a.addAll(Arrays.asList("-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000"));
+            else a.addAll(Arrays.asList("-map", "0:a?"));
+            
+            a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "8", "-pix_fmt", "yuv420p", "-movflags", "+faststart", chunkFile.getAbsolutePath()));
+            
+            int progressBase = 10 + (int)((globalChunkIndex / (double)totalChunks) * 80);
+            int progressSpan = Math.max(1, (int)(80.0 / totalChunks));
+            
+            activeSession = executeTracked(a.toArray(new String[0]), call, progressBase, progressSpan, partAudioDur, "Part " + (p+1) + "/" + totalPartsCount + " (Chunk " + (c+1) + "/" + chunkCountPerPart + ") ...", startTime);
+            
+            if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) {
+                String logs = activeSession != null ? activeSession.getAllLogsAsString() : null;
+                throw new Exception("Chunk မအောင်မြင်ပါ။ \n" + (logs != null ? logs : ""));
+            }
+            chunkFiles.add(chunkFile);
+            globalChunkIndex++;
+        }
+        
+        // ✅ Chunk 4 ခုကို Part တစ်ခုအဖြစ် ပေါင်းမယ်
+        File partFile = new File(work, String.format(Locale.US, "part_%03d.mp4", p + 1));
+        File chunkList = new File(work, String.format(Locale.US, "chunks_%03d.txt", p + 1));
+        try (FileOutputStream out = new FileOutputStream(chunkList)) {
+            for (File f : chunkFiles) out.write(("file '" + f.getAbsolutePath() + "'\n").getBytes("UTF-8"));
+        }
+        activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", chunkList.getAbsolutePath(), "-fflags", "+genpts", "-c", "copy", partFile.getAbsolutePath()}, call, 92, 1, partLen, "Part " + (p+1) + " ပေါင်းနေပါတယ်...", startTime);
+        if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Part ပေါင်းမရပါ။");
+        
+        for (File f : chunkFiles) f.delete();
+        chunkList.delete();
+        allParts.add(partFile);
+      }
+      
+      // ✅ အားလုံးကို ပေါင်းပြီး နောက်ဆုံး ထုတ်မယ်
+      progress(call, 96, "အားလုံးကို ပေါင်းနေပါတယ်...");
+      File finalList = new File(work, "all_parts.txt");
+      try (FileOutputStream out = new FileOutputStream(finalList)) {
+          for (File f : allParts) out.write(("file '" + f.getAbsolutePath() + "'\n").getBytes("UTF-8"));
+      }
+      File merged = new File(getContext().getCacheDir(), "sigyi_preview_final.mp4");
+      if (merged.exists()) merged.delete();
+      
+      activeSession = executeTracked(new String[]{"-y", "-f", "concat", "-safe", "0", "-i", finalList.getAbsolutePath(), "-fflags", "+genpts", "-c", "copy", "-movflags", "+faststart", merged.getAbsolutePath()}, call, 98, 1, finalDuration, "ပေါင်းနေပါတယ်...", startTime);
+      
+      if (activeSession == null || !ReturnCode.isSuccess(activeSession.getReturnCode())) throw new Exception("Merge မအောင်မြင်ပါ။");
+      
+      for (File f : allParts) f.delete(); finalList.delete(); fixedVideo.delete();
+      progress(call, 99, "Movies folder ထဲ သိမ်းနေပါတယ်…"); 
+      Uri saved = saveMovies(merged);
+      
+      JSObject result = new JSObject(); result.put("savedUri", saved.toString()); result.put("previewPath", merged.getAbsolutePath()); result.put("name", "SiGyi_Recap.mp4"); result.put("size", merged.length());
       progress(call, 100, "Render ပြီးပါပြီ"); 
       call.resolve(result);
       
@@ -252,9 +316,8 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  // ✅ Freeze Frame လုံးဝ မပါတော့ပါ
-  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int logoInput, File logo, int titleInput, File titleOverlay, boolean isLandscape, double speedFactor, boolean hasAudio) throws Exception {
-    String base = videoFilter(s, w, h, fps, seconds, isLandscape, speedFactor);
+  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int partIndex, int logoInput, File logo, int titleInput, File titleOverlay, int outW, int outH, boolean isLandscape, double speedFactor, boolean hasAudio) throws Exception {
+    String base = videoFilter(s, w, h, fps, seconds, partIndex, isLandscape, speedFactor);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     
@@ -327,7 +390,7 @@ public class NativeRenderPlugin extends Plugin {
   private int even(int n) { return Math.max(2, n & ~1); }
   private double clamp(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
 
-  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, boolean isLandscape, double speedFactor) {
+  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, int partIndex, boolean isLandscape, double speedFactor) {
     String base;
     if ("fit".equals(s.optString("fitMode", "fit"))) {
         base = "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease,pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2:color=black";
@@ -418,4 +481,4 @@ public class NativeRenderPlugin extends Plugin {
   }
   
   @PluginMethod public void cancel(PluginCall call) { cancelled = true; FFmpegKit.cancel(); call.resolve(); }
-}
+        }
