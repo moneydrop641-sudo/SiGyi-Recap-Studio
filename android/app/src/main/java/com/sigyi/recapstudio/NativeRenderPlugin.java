@@ -144,12 +144,16 @@ public class NativeRenderPlugin extends Plugin {
     long startTime = System.currentTimeMillis();
     
     try {
-      // ✅ အဆင့် (၁) - 30fps/48kHz ပြောင်းမယ်
+      // ✅ 0.9x / 1.1x Speed သတ်မှတ်မယ်
+      double videoSpeed = 0.9;
+      double audioSpeed = 1.1;
+      
       progress(call, 2, "ဗီဒီယိုကို 30fps/48kHz ပြောင်းနေပါတယ်...");
       File fixedVideo = new File(work, "fixed_video.mp4");
+      // Video ကို 0.9x နှေးအောင် လုပ်မယ် (setpts=1/0.9)
       activeSession = executeTracked(new String[]{
           "-y", "-i", source.getAbsolutePath(),
-          "-vf", "fps=30",
+          "-vf", "fps=30,setpts=" + (1.0/videoSpeed) + "*PTS",
           "-c:v", "mpeg4", "-q:v", "5",
           "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
           fixedVideo.getAbsolutePath()
@@ -159,19 +163,11 @@ public class NativeRenderPlugin extends Plugin {
           throw new Exception("Video ပြောင်းလဲမှု မအောင်မြင်ပါ။");
       }
       
-      // ✅ အဆင့် (၂) - Duration တွက်မယ်
       double vDuration = probe(fixedVideo);
       double aDuration = voice != null ? probe(voice) : vDuration;
-      double finalDuration = voice != null ? aDuration : vDuration;
+      double finalDuration = voice != null ? aDuration / audioSpeed : vDuration;
       
       if (finalDuration <= 0) throw new Exception("Duration မဖတ်နိုင်ပါ။");
-      
-      // ✅ Video ကို Audio နဲ့ ကွက်တိဖြစ်အောင် Speed Factor တွက်မယ်
-      double speedFactor = 1.0;
-      if (voice != null && vDuration < aDuration && vDuration > 0) {
-          speedFactor = vDuration / aDuration;
-          if (speedFactor < 0.5) speedFactor = 0.5;
-      }
       
       String res = call.getString("resolution", "720p");
       int w, h, fps = 30;
@@ -184,8 +180,6 @@ public class NativeRenderPlugin extends Plugin {
       if (!titleText.trim().isEmpty()) titleOverlay = createTitleOverlay(work, titleText, style, w, h);
       
       List<String> a = new ArrayList<>(Arrays.asList("-y"));
-      
-      // ✅ Video နဲ့ Audio ကို တစ်ခါတည်း ဖတ်မယ်
       a.addAll(Arrays.asList("-i", fixedVideo.getAbsolutePath()));
       if (voice != null) a.addAll(Arrays.asList("-i", voice.getAbsolutePath()));
       
@@ -193,8 +187,8 @@ public class NativeRenderPlugin extends Plugin {
       if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
       if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
       
-      // ✅ Filter Chain ကို တစ်ခါတည်း တည်ဆောက်မယ်
-      String filterComplex = buildFilterGraph(style, w, h, fps, finalDuration, logoInput, logo, titleInput, titleOverlay, isLandscape, speedFactor, voice != null);
+      // ✅ Audio ကို 1.1x မြန်အောင် လုပ်မယ် (atempo=1.1)
+      String filterComplex = buildFilterGraph(style, w, h, fps, finalDuration, logoInput, logo, titleInput, titleOverlay, isLandscape, audioSpeed, voice != null);
       a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
       
       if (voice != null) {
@@ -203,7 +197,6 @@ public class NativeRenderPlugin extends Plugin {
           a.addAll(Arrays.asList("-map", "0:a?"));
       }
       
-      // ✅ Output ကို တစ်ခါတည်း ထုတ်မယ်
       File output = new File(work, "final.mp4");
       a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "8", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.getAbsolutePath()));
       
@@ -268,8 +261,8 @@ public class NativeRenderPlugin extends Plugin {
     latch.await(30, TimeUnit.SECONDS); return d[0];
   }
 
-  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int logoInput, File logo, int titleInput, File titleOverlay, boolean isLandscape, double speedFactor, boolean hasAudio) throws Exception {
-    String base = videoFilter(s, w, h, fps, seconds, isLandscape, speedFactor);
+  private String buildFilterGraph(JSObject s, int w, int h, int fps, double seconds, int logoInput, File logo, int titleInput, File titleOverlay, boolean isLandscape, double audioSpeed, boolean hasAudio) throws Exception {
+    String base = videoFilter(s, w, h, fps, seconds, isLandscape);
     String current = "base";
     StringBuilder g = new StringBuilder("[0:v]").append(base).append("[base];");
     
@@ -301,12 +294,9 @@ public class NativeRenderPlugin extends Plugin {
       current = "titleout";
     }
     
+    // ✅ Audio ကို 1.1x မြန်အောင် လုပ်မယ်
     if (hasAudio) {
-        g.append("[1:a]aresample=async=1000:first_pts=0");
-        if (speedFactor < 1.0) {
-            g.append(",atempo=").append(String.format(Locale.US, "%.4f", speedFactor));
-        }
-        g.append("[aout];"); 
+        g.append("[1:a]aresample=async=1000:first_pts=0,atempo=").append(String.format(Locale.US, "%.4f", audioSpeed)).append("[aout];"); 
     }
     
     g.append("[").append(current).append("]null[vout]");
@@ -342,7 +332,7 @@ public class NativeRenderPlugin extends Plugin {
   private int even(int n) { return Math.max(2, n & ~1); }
   private double clamp(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
 
-  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, boolean isLandscape, double speedFactor) {
+  private String videoFilter(JSObject s, int w, int h, int fps, double seconds, boolean isLandscape) {
     String base;
     if ("fit".equals(s.optString("fitMode", "fit"))) {
         base = "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease,pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2:color=black";
@@ -356,10 +346,6 @@ public class NativeRenderPlugin extends Plugin {
     double zoom = Math.max(1, Math.min(1.12, s.optDouble("zoom", 1.02)));
     if (zoom > 1.001) base += ",crop=w='iw/" + zoom + "':h='ih/" + zoom + "':x='(iw-ow)/2':y='(ih-oh)/2',scale=" + w + ":" + h;
     
-    if (speedFactor < 1.0) {
-        base += ",setpts=" + String.format(Locale.US, "%.4f", 1.0/speedFactor) + "*PTS";
-    }
-
     if (s.optBoolean("flip", false)) base += ",hflip"; 
     base += ",fps=" + fps + ",setsar=1";
     
