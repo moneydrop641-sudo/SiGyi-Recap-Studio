@@ -150,11 +150,12 @@ public class NativeRenderPlugin extends Plugin {
       
       progress(call, 2, "ဗီဒီယိုကို 30fps/48kHz ပြောင်းနေပါတယ်...");
       File fixedVideo = new File(work, "fixed_video.mp4");
-      // Video ကို 0.9x နှေးအောင် လုပ်မယ် (setpts=1/0.9)
+      
+      // ✅ ပိုမြန်စေဖို့ -preset ultrafast နဲ့ Resolution ကို လျှော့မယ် (မူရင်း aspect ကို ထိန်းထားမယ်)
       activeSession = executeTracked(new String[]{
           "-y", "-i", source.getAbsolutePath(),
-          "-vf", "fps=30,setpts=" + (1.0/videoSpeed) + "*PTS",
-          "-c:v", "mpeg4", "-q:v", "5",
+          "-vf", "fps=30,scale=-2:720", // 720p ကို ချုံ့ပြီး 30fps လုပ်မယ်
+          "-c:v", "mpeg4", "-q:v", "5", "-preset", "ultrafast",
           "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
           fixedVideo.getAbsolutePath()
       }, call, 2, 5, 0, "ဗီဒီယိုကို ပြောင်းနေပါတယ်...", startTime);
@@ -187,7 +188,6 @@ public class NativeRenderPlugin extends Plugin {
       if (logo != null) { logoInput = nextInput++; a.addAll(Arrays.asList("-loop", "1", "-i", logo.getAbsolutePath())); }
       if (titleOverlay != null) { titleInput = nextInput; a.addAll(Arrays.asList("-loop", "1", "-i", titleOverlay.getAbsolutePath())); }
       
-      // ✅ Audio ကို 1.1x မြန်အောင် လုပ်မယ် (atempo=1.1)
       String filterComplex = buildFilterGraph(style, w, h, fps, finalDuration, logoInput, logo, titleInput, titleOverlay, isLandscape, audioSpeed, voice != null);
       a.addAll(Arrays.asList("-filter_complex", filterComplex, "-map", "[vout]"));
       
@@ -198,7 +198,8 @@ public class NativeRenderPlugin extends Plugin {
       }
       
       File output = new File(work, "final.mp4");
-      a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-threads", "8", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.getAbsolutePath()));
+      // ✅ ပိုမြန်စေဖို့ -preset ultrafast ကို ထည့်ထားတယ်
+      a.addAll(Arrays.asList("-c:v", "mpeg4", "-q:v", "5", "-preset", "ultrafast", "-threads", "8", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.getAbsolutePath()));
       
       activeSession = executeTracked(a.toArray(new String[0]), call, 10, 85, finalDuration, "Render လုပ်နေပါတယ်...", startTime);
       
@@ -208,7 +209,14 @@ public class NativeRenderPlugin extends Plugin {
       }
       
       progress(call, 96, "Movies folder ထဲ သိမ်းနေပါတယ်…"); 
-      Uri saved = saveMovies(output);
+      
+      // ✅ saveMovies မှာ Error တက်ရင် ဖမ်းမိအောင် လုပ်ထားတယ်
+      Uri saved;
+      try {
+          saved = saveMovies(output);
+      } catch (Throwable t) {
+          throw new Exception("Movies folder ထဲ သိမ်းမရပါ: " + t.getMessage());
+      }
       
       JSObject result = new JSObject(); result.put("savedUri", saved.toString()); result.put("previewPath", output.getAbsolutePath()); result.put("name", "SiGyi_Recap.mp4"); result.put("size", output.length());
       progress(call, 100, "Render ပြီးပါပြီ"); 
@@ -294,7 +302,6 @@ public class NativeRenderPlugin extends Plugin {
       current = "titleout";
     }
     
-    // ✅ Audio ကို 1.1x မြန်အောင် လုပ်မယ်
     if (hasAudio) {
         g.append("[1:a]aresample=async=1000:first_pts=0,atempo=").append(String.format(Locale.US, "%.4f", audioSpeed)).append("[aout];"); 
     }
